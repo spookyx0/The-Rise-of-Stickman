@@ -356,6 +356,72 @@ class Stickman:
         self.level = 0
         self.xp = 0
 
+    def draw_preview(self, surface, x, y, scale=1.0, direction=1):
+        """Draws a simplified, static stickman for preview purposes."""
+        # Temporarily override some attributes for drawing
+        original_x, original_y = self.x, self.y
+        original_scale, original_direction = self.scale, self.direction
+        original_height, original_width = self.height, self.width
+
+        self.x, self.y = x, y
+        self.scale = scale
+        self.direction = direction
+        self.height = original_height * scale
+        self.width = original_width * scale
+
+        draw_color = self.color
+
+        head_pos = (int(self.x), int(self.y - self.height * 0.9))
+        body_start = head_pos
+        body_end = (int(self.x), int(self.y - self.height * 0.4))
+        
+        # Standing pose for legs
+        leg1_end = (int(self.x - self.width * 0.25 * self.direction), int(self.y))
+        leg2_end = (int(self.x + self.width * 0.25 * self.direction), int(self.y))
+        
+        # Standing pose for arms
+        arm1_start = (int(self.x), int(self.y - self.height * 0.7))
+        arm2_start = arm1_start
+        arm1_end = (int(self.x - self.width * 0.4 * self.direction), int(self.y - self.height * 0.5))
+        arm2_end = (int(self.x + self.width * 0.4 * self.direction), int(self.y - self.height * 0.5))
+
+        # Draw body parts
+        pygame.draw.circle(surface, draw_color, head_pos, int(self.height * 0.1 * self.scale)) # Head
+        pygame.draw.line(surface, draw_color, body_start, body_end, int(5 * self.scale)) # Body
+        pygame.draw.line(surface, draw_color, body_end, leg1_end, int(5 * self.scale)) # Leg 1
+        pygame.draw.line(surface, draw_color, body_end, leg2_end, int(5 * self.scale)) # Leg 2
+        pygame.draw.line(surface, draw_color, arm1_start, arm1_end, int(5 * self.scale)) # Arm 1
+        pygame.draw.line(surface, draw_color, arm2_start, arm2_end, int(5 * self.scale)) # Arm 2
+
+        # Draw player-specific accessories for preview (assuming it's always a player preview)
+        # Player headband
+        headband_y = head_pos[1]
+        pygame.draw.line(surface, WHITE, 
+                         (head_pos[0] - int(self.height * 0.1 * self.scale), headband_y), 
+                         (head_pos[0] + int(self.height * 0.1 * self.scale), headband_y), 4)
+        # Player cape (simplified)
+        cape_start = (int(self.x - (3 * self.direction)), int(self.y - self.height * 0.65))
+        pygame.draw.rect(surface, BLUE, (cape_start[0], cape_start[1], int(8 * self.scale), int(30 * self.scale)))
+        # Player gloves
+        glove_color = BLUE
+        pygame.draw.circle(surface, glove_color, arm1_end, int(8 * self.scale))
+        pygame.draw.circle(surface, glove_color, arm2_end, int(8 * self.scale))
+
+        # Restore original attributes
+        self.x, self.y = original_x, original_y
+        self.scale, self.direction = original_scale, original_direction
+        self.height, self.width = original_height, original_width
+
+
+
+
+
+
+
+
+
+
+
     def draw(self, surface):
         """Draws the stickman on the screen."""
         if self.is_dying:
