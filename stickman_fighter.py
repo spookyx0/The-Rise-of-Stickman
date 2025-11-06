@@ -1719,7 +1719,7 @@ def draw_main_menu(start_button, mouse_pos):
     """Draws the main title screen and start button."""
     screen.fill(SKY_COLOR)
     title_text = GAME_OVER_FONT.render("Stickman Fighter", True, YELLOW)
-    title_rect = title_text.get_rect(center=(SCREEN_WIDTH / 2, SCREEN_HEIGHT / 2 - 150))
+    title_rect = title_text.get_rect(center=(SCREEN_WIDTH / 2, SCREEN_HEIGHT / 2 - 200)) # Moved title up
     screen.blit(title_text, title_rect)
     
     # Draw Start Button
@@ -1732,6 +1732,61 @@ def draw_main_menu(start_button, mouse_pos):
     start_text = LEVEL_FONT.render("START", True, BLACK)
     start_rect = start_text.get_rect(center=start_button.center)
     screen.blit(start_text, start_rect)
+    
+    # --- Add Instructions ---
+    instructions_y_start = start_button.bottom + 50
+    
+    # Section Titles
+    controls_title = LEVEL_FONT.render("Controls", True, WHITE)
+    controls_title_rect = controls_title.get_rect(center=(SCREEN_WIDTH / 2, instructions_y_start))
+    screen.blit(controls_title, controls_title_rect)
+    
+    # Arrange controls in columns
+    col1_x = SCREEN_WIDTH / 2 - 400
+    col2_x = SCREEN_WIDTH / 2
+    col3_x = SCREEN_WIDTH / 2 + 400
+    
+    col_y_start = instructions_y_start + 70
+    line_height = 40
+    
+    # Column 1: Movement
+    move_title = HEALTH_FONT.render("--- Movement ---", True, WHITE)
+    screen.blit(move_title, move_title.get_rect(center=(col1_x, col_y_start)))
+    
+    move_w = HEALTH_FONT.render("W = Jump", True, WHITE)
+    screen.blit(move_w, move_w.get_rect(center=(col1_x, col_y_start + line_height * 1)))
+    move_a = HEALTH_FONT.render("A = Move Left", True, WHITE)
+    screen.blit(move_a, move_a.get_rect(center=(col1_x, col_y_start + line_height * 2)))
+    move_d = HEALTH_FONT.render("D = Move Right", True, WHITE)
+    screen.blit(move_d, move_d.get_rect(center=(col1_x, col_y_start + line_height * 3)))
+    move_s = HEALTH_FONT.render("S (Air) = Ground Pound", True, WHITE)
+    screen.blit(move_s, move_s.get_rect(center=(col1_x, col_y_start + line_height * 4)))
+
+    # Column 2: Combat
+    combat_title = HEALTH_FONT.render("--- Combat ---", True, WHITE)
+    screen.blit(combat_title, combat_title.get_rect(center=(col2_x, col_y_start)))
+    
+    combat_j = HEALTH_FONT.render("J = Punch", True, WHITE)
+    screen.blit(combat_j, combat_j.get_rect(center=(col2_x, col_y_start + line_height * 1)))
+    combat_k = HEALTH_FONT.render("K = Kick", True, WHITE)
+    screen.blit(combat_k, combat_k.get_rect(center=(col2_x, col_y_start + line_height * 2)))
+    combat_s = HEALTH_FONT.render("S (Ground) = Block", True, WHITE)
+    screen.blit(combat_s, combat_s.get_rect(center=(col2_x, col_y_start + line_height * 3)))
+    combat_k_air = HEALTH_FONT.render("K (Air) = Air Kick", True, WHITE)
+    screen.blit(combat_k_air, combat_k_air.get_rect(center=(col2_x, col_y_start + line_height * 4)))
+    
+    # Column 3: Skills
+    skills_title = HEALTH_FONT.render("--- Skills ---", True, WHITE)
+    screen.blit(skills_title, skills_title.get_rect(center=(col3_x, col_y_start)))
+    
+    skill_l = HEALTH_FONT.render("L = Fireball (Special)", True, WHITE)
+    screen.blit(skill_l, skill_l.get_rect(center=(col3_x, col_y_start + line_height * 1)))
+    skill_dash = HEALTH_FONT.render("L-Shift = Dash / Air Dash", True, WHITE)
+    screen.blit(skill_dash, skill_dash.get_rect(center=(col3_x, col_y_start + line_height * 2)))
+    skill_t = HEALTH_FONT.render("T = Teleport", True, WHITE)
+    screen.blit(skill_t, skill_t.get_rect(center=(col3_x, col_y_start + line_height * 3)))
+    skill_u = HEALTH_FONT.render("U = Meteor Slam (Ultimate)", True, WHITE)
+    screen.blit(skill_u, skill_u.get_rect(center=(col3_x, col_y_start + line_height * 4)))
 
 def draw_difficulty_select(easy_rect, medium_rect, hard_rect, mouse_pos):
     """Draws the difficulty selection screen."""
@@ -1772,7 +1827,7 @@ def main():
     app_state = 'MAIN_MENU' # MAIN_MENU, DIFFICULTY_SELECT
     
     # --- Button Rects for Menus (Adjusted for 1600x900) ---
-    start_button_rect = pygame.Rect(SCREEN_WIDTH / 2 - 150, SCREEN_HEIGHT / 2 - 40, 300, 80)
+    start_button_rect = pygame.Rect(SCREEN_WIDTH / 2 - 150, SCREEN_HEIGHT / 2 - 100, 300, 80) # Moved Start button up
     
     easy_button_rect = pygame.Rect(SCREEN_WIDTH / 2 - 150, SCREEN_HEIGHT / 2 - 100, 300, 80)
     medium_button_rect = pygame.Rect(SCREEN_WIDTH / 2 - 150, SCREEN_HEIGHT / 2 + 10, 300, 80)
