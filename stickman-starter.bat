@@ -48,9 +48,24 @@ if %errorlevel% neq 0 (
     exit /b 1
 )
 
+:: ========================================================================
+:: MODIFIED SECTION
+:: This step now upgrades pip AND installs the build tools (setuptools/wheel)
+:: that pygame needs to compile. This fixes the 'distutils' error.
+
+rem Upgrade pip and install essential build tools
+echo Upgrading pip, setuptools, and wheel...
+python.exe -m pip install --upgrade pip setuptools wheel
+if %errorlevel% neq 0 (
+    echo Failed to upgrade pip or install build tools.
+    pause
+    exit /b 1
+)
+:: ========================================================================
+
 rem Install dependencies
-echo Installing/updating dependencies...
-pip install -r requirements.txt
+echo Installing/updating dependencies from requirements.txt...
+pip install --no-build-isolation -r requirements.txt
 if %errorlevel% neq 0 (
     echo Failed to install dependencies.
     pause
