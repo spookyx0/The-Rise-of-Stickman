@@ -26,6 +26,10 @@ GRAY = (128, 128, 128)
 YELLOW = (255, 255, 0)
 PURPLE = (128, 0, 128)
 ORANGE = (255, 165, 0)
+LIGHT_GRAY = (170, 170, 170)
+LIGHT_GREEN = (144, 238, 144)
+LIGHT_RED = (240, 128, 128)
+LIGHT_ORANGE = (255, 200, 100)
 
 # --- Game Window ---
 screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
@@ -33,8 +37,15 @@ pygame.display.set_caption("Stickman Fighter")
 clock = pygame.time.Clock()
 
 # --- Fonts ---
-HEALTH_FONT = pygame.font.SysFont('Arial', 30)
-SPECIAL_FONT = pygame.font.SysFont('Arial', 24, bold=True)
+try:
+    # Try to use a more "game-like" font
+    HEALTH_FONT = pygame.font.SysFont('Consolas', 24, bold=True)
+    SPECIAL_FONT = pygame.font.SysFont('Consolas', 18, bold=True)
+except:
+    # Fallback to Arial
+    HEALTH_FONT = pygame.font.SysFont('Arial', 22, bold=True)
+    SPECIAL_FONT = pygame.font.SysFont('Arial', 16, bold=True)
+
 GAME_OVER_FONT = pygame.font.SysFont('Arial', 75)
 LEVEL_FONT = pygame.font.SysFont('Arial', 50)
 TIMER_FONT = pygame.font.SysFont('Arial', 40, bold=True)
@@ -68,7 +79,9 @@ all_powerups = [
     {'name': 'Critical Hit', 'effect': 'crit_chance', 'value': 0.1, 'desc': '+10% Crit Chance (2x Dmg)'},
     {'name': 'Fireball Damage', 'effect': 'fireball_damage', 'value': 10, 'desc': '+10 Fireball Damage'},
     {'name': 'Stomp Damage', 'effect': 'stomp_damage', 'value': 15, 'desc': '+15 Air Attack Damage'},
-    {'name': 'Ultimate Charge', 'effect': 'ult_charge_rate', 'value': 5, 'desc': '+5 Bonus Ult Charge on Hit'}
+    {'name': 'Ultimate Charge', 'effect': 'ult_charge_rate', 'value': 5, 'desc': '+5 Bonus Ult Charge on Hit'},
+    {'name': 'Air Dash', 'effect': 'max_air_dash', 'value': 1, 'desc': '+1 Max Air Dash'},
+    {'name': 'Ultimate Aura', 'effect': 'ult_aura', 'value': 1, 'desc': '+Dmg/Speed when Ult is full'}
 ]
 
 class Particle:
@@ -171,14 +184,17 @@ class Stickman:
         # Stats that get modified by powerups
         self.health = 100
         self.max_health = 100
+        self.base_damage = 10 # Store base stats for auras
+        self.base_speed = 7
         self.damage = 10
-        self.speed = 7 # Base move speed
+        self.speed = 7
         self.speed_multiplier = 1.0 # For AI
         self.crit_chance = 0.0
         self.fireball_damage = 30
         self.stomp_damage = 15
         self.ultimate_damage = 75 # Player ult damage
         self.ult_charge_rate = 0 # Bonus ult charge
+        self.has_ult_aura = False
         
         self.is_attacking = False
         self.attack_type = "punch"
@@ -221,6 +237,8 @@ class Stickman:
         self.dash_duration = 0
         self.is_dashing = False
         self.dash_invulnerability = 0
+        self.max_air_dash = 1 # New Air Dash
+        self.air_dash_count = 1
         
         # Teleport state
         self.teleport_cooldown = 0
@@ -354,6 +372,14 @@ class Stickman:
             arm1_end = (int(self.x - self.width * 0.3 * self.direction), int(self.y - self.height * 0.8))
             arm2_end = (int(self.x + self.width * 0.3 * self.direction), int(self.y - self.height * 0.8))
 
+        # --- Draw Ultimate Aura ---
+        if self.has_ult_aura and self.ultimate_charge == self.max_ultimate_charge and not self.is_ulting:
+            aura_radius = 20 + abs(math.sin(pygame.time.get_ticks() * 0.01) * 10) # Pulsing radius
+            aura_alpha = 100 + abs(math.sin(pygame.time.get_ticks() * 0.01) * 50) # Pulsing alpha
+            aura_surf = pygame.Surface((aura_radius * 2, aura_radius * 2), pygame.SRCALPHA)
+            pygame.draw.circle(aura_surf, (YELLOW + (aura_alpha,)), (aura_radius, aura_radius), aura_radius)
+            surface.blit(aura_surf, (self.x - aura_radius, self.y - self.height/2 - aura_radius/2))
+
         # Draw body parts
         pygame.draw.circle(surface, draw_color, head_pos, int(self.height * 0.1)) # Head
         pygame.draw.line(surface, draw_color, body_start, body_end, 5) # Body
@@ -470,13 +496,23 @@ class Stickman:
         if self.dash_cooldown > 0:
             self.dash_cooldown -= 1
         
-        if keys[pygame.K_LSHIFT] and self.dash_cooldown == 0 and self.on_ground:
-            self.is_dashing = True
-            self.dash_duration = 10 # 1/6th of a second dash
-            self.dash_cooldown = self.max_dash_cooldown
-            self.dash_invulnerability = 10 # Invulnerable during dash
-            particles.extend([Particle(self.x, self.y - 50, WHITE) for _ in range(10)]) # Dash effect
-            return # Don't do other movement
+        if keys[pygame.K_LSHIFT] and self.dash_cooldown == 0:
+            if self.on_ground:
+                self.is_dashing = True
+                self.dash_duration = 10 # 1/6th of a second dash
+                self.dash_cooldown = self.max_dash_cooldown
+                self.dash_invulnerability = 10 # Invulnerable during dash
+                particles.extend([Particle(self.x, self.y - 50, WHITE) for _ in range(10)]) # Dash effect
+                return
+            elif self.air_dash_count > 0: # --- NEW AIR DASH ---
+                self.air_dash_count -= 1
+                self.is_dashing = True
+                self.dash_duration = 10
+                self.dash_cooldown = self.max_dash_cooldown
+                self.dash_invulnerability = 10
+                self.vel_y = 0 # Stop falling
+                particles.extend([Particle(self.x, self.y - 50, WHITE) for _ in range(10)]) # Dash effect
+                return
             
         # --- TELEPORT LOGIC ---
         if self.teleport_cooldown > 0:
@@ -770,6 +806,15 @@ class Stickman:
                 self.is_hit = False
             return # Stop other logic
             
+        # --- AURA BUFFS (Player only) ---
+        if self.is_player:
+            if self.has_ult_aura and self.ultimate_charge == self.max_ultimate_charge:
+                self.damage = self.base_damage + 2
+                self.speed = self.base_speed + 0.5
+            else:
+                self.damage = self.base_damage
+                self.speed = self.base_speed
+        
         # --- DASH UPDATE ---
         if self.dash_invulnerability > 0:
             self.dash_invulnerability -= 1
@@ -900,6 +945,7 @@ class Stickman:
                         self.vel_y = 0
                         self.on_ground = True
                         on_platform = True
+                        self.air_dash_count = self.max_air_dash # Reset air dash
                         break
         
         # Ground collision
@@ -907,6 +953,7 @@ class Stickman:
             self.y = GROUND_Y
             self.vel_y = 0
             self.on_ground = True
+            self.air_dash_count = self.max_air_dash # Reset air dash
             
         # Screen boundaries
         if self.x < self.width / 2:
@@ -1001,6 +1048,9 @@ class Stickman:
                     self.health -= damage * 0.2 # Blocked, take 20% damage
                     self.hit_duration = 5
                     text_animations.append(TextAnimation("Blocked", self.x, self.y - 150, GRAY))
+                    # Spawn block sparks
+                    for _ in range(3):
+                        particles.append(Particle(self.x + 20 * self.direction, self.y - 50, WHITE))
                     return # Successfully blocked
                 else:
                     # Hit from behind while blocking! Fall through to normal hit.
@@ -1036,75 +1086,97 @@ def draw_background(surface):
 
 def draw_health_bars(player, enemy):
     """Draws health bars for both fighters."""
-    bar_width = 360
-    bar_height = 30
     
-    # --- Player UI ---
-    
-    # Player Head Icon
-    player_head_pos = (35, 35)
-    pygame.draw.circle(screen, BLUE, player_head_pos, 15)
-    pygame.draw.line(screen, WHITE, (player_head_pos[0] - 10, player_head_pos[1]), (player_head_pos[0] + 10, player_head_pos[1]), 4)
-    
-    # Player health
-    pygame.draw.rect(screen, RED, (60, 20, bar_width, bar_height))
-    pygame.draw.rect(screen, GREEN, (60, 20, (player.health / player.max_health) * bar_width, bar_height))
-    player_health_text = HEALTH_FONT.render(f'Player: {int(player.health)}', True, WHITE)
-    screen.blit(player_health_text, (60, 55))
-    
-    # Player Special Bar
-    special_bar_width = 200
-    special_bar_height = 15
-    special_charge = (player.max_special_cooldown - player.special_cooldown) / player.max_special_cooldown
-    special_text = SPECIAL_FONT.render('SPECIAL', True, GRAY if special_charge < 1.0 else YELLOW)
-    screen.blit(special_text, (60, 90))
-    pygame.draw.rect(screen, GRAY, (140, 95, special_bar_width, special_bar_height), 2)
-    pygame.draw.rect(screen, PURPLE, (140, 95, special_bar_width * special_charge, special_bar_height))
-    
-    # Player Ultimate Bar
-    ult_charge = player.ultimate_charge / player.max_ultimate_charge
-    ult_text = SPECIAL_FONT.render('ULTIMATE', True, GRAY if ult_charge < 1.0 else ORANGE)
-    screen.blit(ult_text, (60, 115))
-    pygame.draw.rect(screen, GRAY, (140, 120, special_bar_width, special_bar_height), 2)
-    pygame.draw.rect(screen, YELLOW, (140, 120, special_bar_width * ult_charge, special_bar_height))
+    # --- Helper Function for UI Pod ---
+    def draw_player_pod(x, y, player_obj, is_enemy):
+        # Container
+        pod_width = 400
+        pod_height = 130
+        pod_rect = pygame.Rect(x, y, pod_width, pod_height)
+        
+        # Semi-transparent background
+        s = pygame.Surface((pod_width, pod_height), pygame.SRCALPHA)
+        s.fill((GRAY[0], GRAY[1], GRAY[2], 80))
+        screen.blit(s, (x, y))
+        pygame.draw.rect(screen, WHITE, pod_rect, 2) # Frame
+        
+        # --- Head Icon ---
+        head_x = x + 35 if not is_enemy else x + pod_width - 35
+        head_pos = (head_x, y + 40)
+        pygame.draw.circle(screen, player_obj.color, head_pos, 20)
+        # Skin
+        if player_obj.is_player:
+            pygame.draw.line(screen, WHITE, (head_pos[0] - 12, head_pos[1]), (head_pos[0] + 12, head_pos[1]), 5)
+        else:
+            pygame.draw.line(screen, BLACK, (head_pos[0] - 7, head_pos[1] + 2), (head_pos[0] - 2, head_pos[1] - 2), 3) # Left eye
+            pygame.draw.line(screen, BLACK, (head_pos[0] + 2, head_pos[1] - 2), (head_pos[0] + 7, head_pos[1] + 2), 3) # Right eye
 
-    # --- Enemy UI ---
-    
-    # Enemy Head Icon
-    enemy_head_pos = (SCREEN_WIDTH - 35, 35)
-    pygame.draw.circle(screen, RED, enemy_head_pos, 15)
-    pygame.draw.line(screen, BLACK, (enemy_head_pos[0] - 6, enemy_head_pos[1] + 2), (enemy_head_pos[0] - 2, enemy_head_pos[1] - 2), 3) # Left eye
-    pygame.draw.line(screen, BLACK, (enemy_head_pos[0] + 2, enemy_head_pos[1] - 2), (enemy_head_pos[0] + 6, enemy_head_pos[1] + 2), 3) # Right eye
-    
-    # Enemy health
-    enemy_health_bar_x = SCREEN_WIDTH - bar_width - 60
-    pygame.draw.rect(screen, RED, (enemy_health_bar_x, 20, bar_width, bar_height))
-    enemy_health_fill = (enemy.health / enemy.max_health) * bar_width
-    pygame.draw.rect(screen, GREEN, (enemy_health_bar_x + (bar_width - enemy_health_fill), 20, enemy_health_fill, bar_height))
-    enemy_health_text = HEALTH_FONT.render(f'Enemy: {int(enemy.health)}', True, WHITE)
-    screen.blit(enemy_health_text, (SCREEN_WIDTH - enemy_health_text.get_width() - 60, 55))
-    
-    # Enemy Special Bar
-    special_charge_enemy = (enemy.max_special_cooldown - enemy.special_cooldown) / enemy.max_special_cooldown
-    special_text_enemy = SPECIAL_FONT.render('SPECIAL', True, GRAY if special_charge_enemy < 1.0 else YELLOW)
-    text_width = special_text_enemy.get_width()
-    text_x_pos = SCREEN_WIDTH - text_width - 60
-    screen.blit(special_text_enemy, (text_x_pos, 90))
-    bar_outline_x = SCREEN_WIDTH - special_bar_width - text_width - 70
-    pygame.draw.rect(screen, GRAY, (bar_outline_x, 95, special_bar_width, special_bar_height), 2)
-    fill_width = special_bar_width * special_charge_enemy
-    pygame.draw.rect(screen, RED, (bar_outline_x, 95, fill_width, special_bar_height))
-    
-    # Enemy Ultimate Bar (FIXED ALIGNMENT)
-    ult_charge_enemy = enemy.ultimate_charge / enemy.max_ultimate_charge
-    ult_text_enemy = SPECIAL_FONT.render('ULTIMATE', True, GRAY if ult_charge_enemy < 1.0 else ORANGE)
-    text_width_ult = ult_text_enemy.get_width()
-    text_x_pos_ult = SCREEN_WIDTH - text_width_ult - 60
-    screen.blit(ult_text_enemy, (text_x_pos_ult, 115))
-    bar_outline_x_ult = SCREEN_WIDTH - special_bar_width - text_width_ult - 70 # Aligns with the text
-    pygame.draw.rect(screen, GRAY, (bar_outline_x_ult, 120, special_bar_width, special_bar_height), 2)
-    fill_width_ult = special_bar_width * ult_charge_enemy
-    pygame.draw.rect(screen, YELLOW, (bar_outline_x_ult, 120, fill_width_ult, special_bar_height))
+        # --- Health Bar ---
+        bar_width = 300
+        bar_height = 25
+        bar_x = x + 80 if not is_enemy else x + 20
+        bar_y = y + 20
+        
+        health_text = HEALTH_FONT.render(f"HP: {int(player_obj.health)}/{int(player_obj.max_health)}", True, WHITE)
+        text_rect = health_text.get_rect(left = bar_x, centery = bar_y + bar_height/2) if not is_enemy \
+                    else health_text.get_rect(right = bar_x + bar_width, centery = bar_y + bar_height/2)
+        
+        pygame.draw.rect(screen, BLACK, (bar_x, bar_y, bar_width, bar_height))
+        
+        health_fill = (player_obj.health / player_obj.max_health) * bar_width
+        health_rect = pygame.Rect(bar_x, bar_y, health_fill, bar_height) if not is_enemy \
+                      else pygame.Rect(bar_x + (bar_width - health_fill), bar_y, health_fill, bar_height)
+        # Gradient Fill
+        if health_fill > 0:
+            health_color_top = GREEN
+            health_color_bottom = (0, 150, 0)
+            pygame.draw.rect(screen, health_color_top, (health_rect.left, health_rect.top, health_rect.width, health_rect.height/2))
+            pygame.draw.rect(screen, health_color_bottom, (health_rect.left, health_rect.centery, health_rect.width, health_rect.height/2))
+            
+        pygame.draw.rect(screen, WHITE, (bar_x, bar_y, bar_width, bar_height), 2)
+        screen.blit(health_text, text_rect)
+
+        # --- Special & Ult Bars ---
+        sub_bar_width = 280
+        sub_bar_height = 15
+        sub_bar_x = x + 80 if not is_enemy else x + 40
+        
+        # Special Bar
+        special_y = y + 70
+        special_charge = (player_obj.max_special_cooldown - player_obj.special_cooldown) / player_obj.max_special_cooldown
+        special_text = SPECIAL_FONT.render('SPECIAL', True, GRAY if special_charge < 1.0 else YELLOW)
+        
+        pygame.draw.rect(screen, BLACK, (sub_bar_x, special_y, sub_bar_width, sub_bar_height))
+        special_fill = sub_bar_width * special_charge
+        special_rect = pygame.Rect(sub_bar_x, special_y, special_fill, sub_bar_height) if not is_enemy \
+                       else pygame.Rect(sub_bar_x + (sub_bar_width - special_fill), special_y, special_fill, sub_bar_height)
+        pygame.draw.rect(screen, PURPLE, special_rect)
+        pygame.draw.rect(screen, WHITE, (sub_bar_x, special_y, sub_bar_width, sub_bar_height), 1)
+        
+        text_rect_spec = special_text.get_rect(right=sub_bar_x - 10, centery=special_y + sub_bar_height/2) if not is_enemy \
+                         else special_text.get_rect(left=sub_bar_x + sub_bar_width + 10, centery=special_y + sub_bar_height/2)
+        screen.blit(special_text, text_rect_spec)
+        
+        # Ultimate Bar
+        ult_y = y + 95
+        ult_charge = player_obj.ultimate_charge / player_obj.max_ultimate_charge
+        ult_text = SPECIAL_FONT.render('ULTIMATE', True, GRAY if ult_charge < 1.0 else ORANGE)
+        
+        pygame.draw.rect(screen, BLACK, (sub_bar_x, ult_y, sub_bar_width, sub_bar_height))
+        ult_fill = sub_bar_width * ult_charge
+        ult_rect = pygame.Rect(sub_bar_x, ult_y, ult_fill, sub_bar_height) if not is_enemy \
+                   else pygame.Rect(sub_bar_x + (sub_bar_width - ult_fill), ult_y, ult_fill, sub_bar_height)
+        pygame.draw.rect(screen, YELLOW, ult_rect)
+        pygame.draw.rect(screen, WHITE, (sub_bar_x, ult_y, sub_bar_width, sub_bar_height), 1)
+        
+        text_rect_ult = ult_text.get_rect(right=sub_bar_x - 10, centery=ult_y + sub_bar_height/2) if not is_enemy \
+                        else ult_text.get_rect(left=sub_bar_x + sub_bar_width + 10, centery=ult_y + sub_bar_height/2)
+        screen.blit(ult_text, text_rect_ult)
+        
+    # Draw Player Pod (Left)
+    draw_player_pod(15, 15, player, is_enemy=False)
+    # Draw Enemy Pod (Right)
+    draw_player_pod(SCREEN_WIDTH - 415, 15, enemy, is_enemy=True)
 
 
 def draw_level_start(level):
@@ -1118,8 +1190,16 @@ def draw_level_start(level):
 
 def draw_timer(time_left):
     """Draws the round timer at the top center."""
+    # Simple frame for the timer
     timer_text = TIMER_FONT.render(f"{time_left}", True, WHITE)
     text_rect = timer_text.get_rect(center=(SCREEN_WIDTH / 2, 40))
+    frame_rect = text_rect.inflate(20, 10)
+    
+    s = pygame.Surface(frame_rect.size, pygame.SRCALPHA)
+    s.fill((GRAY[0], GRAY[1], GRAY[2], 80))
+    screen.blit(s, frame_rect.topleft)
+    pygame.draw.rect(screen, WHITE, frame_rect, 2)
+    
     screen.blit(timer_text, text_rect)
 
 def draw_game_over_screen(message):
@@ -1145,7 +1225,7 @@ def draw_game_over_screen(message):
     
     pygame.display.flip()
 
-def draw_powerup_screen(selected_powerups):
+def draw_powerup_screen(selected_powerups, mouse_pos):
     """Draws the power-up selection screen."""
     screen.fill(BLACK)
     
@@ -1165,7 +1245,12 @@ def draw_powerup_screen(selected_powerups):
         y_pos = SCREEN_HEIGHT / 2 - 50
         
         box_rect = pygame.Rect(x_pos - box_width/2, y_pos - box_height/2, box_width, box_height)
-        pygame.draw.rect(screen, GRAY, box_rect, 5)
+        
+        # Hover effect
+        if box_rect.collidepoint(mouse_pos):
+            pygame.draw.rect(screen, LIGHT_GRAY, box_rect, 5)
+        else:
+            pygame.draw.rect(screen, GRAY, box_rect, 5)
         
         # Key number
         key_num_text = LEVEL_FONT.render(f"({i+1})", True, WHITE)
@@ -1181,8 +1266,6 @@ def draw_powerup_screen(selected_powerups):
         desc_text = POWERUP_DESC_FONT.render(powerup['desc'], True, WHITE)
         desc_rect = desc_text.get_rect(center=(box_rect.centerx, box_rect.centery + 30))
         screen.blit(desc_text, desc_rect)
-
-    pygame.display.flip()
 
 def run_game(difficulty):
     """Main game loop."""
@@ -1203,7 +1286,9 @@ def run_game(difficulty):
         'ult_charge_rate': 0,
         'ultimate_charge': 0,
         'max_ultimate_charge': 100,
-        'full_heal_next_level': False
+        'full_heal_next_level': False,
+        'max_air_dash': 1,
+        'has_ult_aura': False
     }
     
     current_level = 1
@@ -1218,11 +1303,15 @@ def run_game(difficulty):
     
     game_over_timer = 0
     game_over_pending = ""
+    
+    mouse_pos = (0, 0) # For powerup screen hover
 
     # This loop handles level progression
     while True:
         
         # --- Event Handling (Global) ---
+        mouse_pos = pygame.mouse.get_pos() # Get mouse pos every frame
+        
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 pygame.quit()
@@ -1249,9 +1338,42 @@ def run_game(difficulty):
                         
                         if effect == 'full_heal':
                             player_stats['full_heal_next_level'] = True
+                        elif effect == 'ult_aura':
+                            player_stats['has_ult_aura'] = True
                         else:
                             player_stats[effect] += value
                             # Ensure cooldowns don't go below a minimum
+                            if 'cd' in effect and player_stats[effect] < 30:
+                                player_stats[effect] = 30
+                        
+                        current_level += 1
+                        game_state = 'START_LEVEL'
+                
+                # Allow clicking powerups
+                if event.type == pygame.MOUSEBUTTONDOWN:
+                    chosen_index = -1
+                    for i in range(3):
+                        box_width = 300
+                        box_height = 200
+                        x_pos = (SCREEN_WIDTH / 2) + (i - 1) * (box_width + 50)
+                        y_pos = SCREEN_HEIGHT / 2 - 50
+                        box_rect = pygame.Rect(x_pos - box_width/2, y_pos - box_height/2, box_width, box_height)
+                        if box_rect.collidepoint(mouse_pos):
+                            chosen_index = i
+                            break
+                    
+                    if chosen_index != -1:
+                        # Apply power-up (same as above)
+                        choice = selected_powerups[chosen_index]
+                        effect = choice['effect']
+                        value = choice['value']
+                        
+                        if effect == 'full_heal':
+                            player_stats['full_heal_next_level'] = True
+                        elif effect == 'ult_aura':
+                            player_stats['has_ult_aura'] = True
+                        else:
+                            player_stats[effect] += value
                             if 'cd' in effect and player_stats[effect] < 30:
                                 player_stats[effect] = 30
                         
@@ -1284,6 +1406,8 @@ def run_game(difficulty):
                 player_stats['full_heal_next_level'] = False # Consume buff
             else:
                 player.health = player_stats['max_health'] # Heal to new max
+            player.base_damage = player_stats['damage'] # Set base stats
+            player.base_speed = player_stats['speed']
             player.damage = player_stats['damage']
             player.speed = player_stats['speed']
             player.max_special_cooldown = player_stats['special_cd']
@@ -1296,6 +1420,9 @@ def run_game(difficulty):
             player.ult_charge_rate = player_stats['ult_charge_rate']
             player.ultimate_charge = player_stats['ultimate_charge'] # Carry over ult charge
             player.max_ultimate_charge = player_stats['max_ultimate_charge']
+            player.max_air_dash = player_stats['max_air_dash']
+            player.air_dash_count = player.max_air_dash
+            player.has_ult_aura = player_stats['has_ult_aura']
 
             
             # Create Enemy
@@ -1326,7 +1453,10 @@ def run_game(difficulty):
             enemy.max_health = enemy_health
             enemy.health = enemy_health
             enemy.speed_multiplier = enemy_speed
+            enemy.base_damage = enemy_damage # Set base stats
+            enemy.base_speed = 7
             enemy.damage = enemy_damage
+            enemy.speed = 7
             enemy.stomp_damage = 10 * (enemy_damage / 5) # Scale stomp too
             
             # Reset timers
@@ -1508,7 +1638,7 @@ def run_game(difficulty):
             pygame.display.flip()
 
         elif game_state == 'POWERUP':
-            draw_powerup_screen(selected_powerups)
+            draw_powerup_screen(selected_powerups, mouse_pos)
             pygame.display.flip()
             
         elif game_state == 'GAME_OVER':
@@ -1519,7 +1649,7 @@ def run_game(difficulty):
             draw_game_over_screen("You Beat The Game!")
             pygame.display.flip()
 
-def draw_main_menu(start_button):
+def draw_main_menu(start_button, mouse_pos):
     """Draws the main title screen and start button."""
     screen.fill(SKY_COLOR)
     title_text = GAME_OVER_FONT.render("Stickman Fighter", True, YELLOW)
@@ -1527,12 +1657,17 @@ def draw_main_menu(start_button):
     screen.blit(title_text, title_rect)
     
     # Draw Start Button
-    pygame.draw.rect(screen, GREEN, start_button)
+    button_color = GREEN
+    if start_button.collidepoint(mouse_pos):
+        button_color = LIGHT_GREEN # Hover effect
+        
+    pygame.draw.rect(screen, button_color, start_button, border_radius=10)
+    pygame.draw.rect(screen, WHITE, start_button, 4, border_radius=10) # Border
     start_text = LEVEL_FONT.render("START", True, BLACK)
     start_rect = start_text.get_rect(center=start_button.center)
     screen.blit(start_text, start_rect)
 
-def draw_difficulty_select(easy_rect, medium_rect, hard_rect):
+def draw_difficulty_select(easy_rect, medium_rect, hard_rect, mouse_pos):
     """Draws the difficulty selection screen."""
     screen.fill(SKY_COLOR)
     title_text = POWERUP_TITLE_FONT.render("Choose Difficulty", True, WHITE)
@@ -1540,17 +1675,29 @@ def draw_difficulty_select(easy_rect, medium_rect, hard_rect):
     screen.blit(title_text, title_rect)
     
     # Easy
-    pygame.draw.rect(screen, GREEN, easy_rect)
+    easy_color = GREEN
+    if easy_rect.collidepoint(mouse_pos):
+        easy_color = LIGHT_GREEN
+    pygame.draw.rect(screen, easy_color, easy_rect, border_radius=10)
+    pygame.draw.rect(screen, WHITE, easy_rect, 4, border_radius=10)
     easy_text = LEVEL_FONT.render("Easy", True, BLACK)
     screen.blit(easy_text, easy_text.get_rect(center=easy_rect.center))
     
     # Medium
-    pygame.draw.rect(screen, ORANGE, medium_rect)
+    medium_color = ORANGE
+    if medium_rect.collidepoint(mouse_pos):
+        medium_color = LIGHT_ORANGE
+    pygame.draw.rect(screen, medium_color, medium_rect, border_radius=10)
+    pygame.draw.rect(screen, WHITE, medium_rect, 4, border_radius=10)
     medium_text = LEVEL_FONT.render("Medium", True, BLACK)
     screen.blit(medium_text, medium_text.get_rect(center=medium_rect.center))
     
     # Hard
-    pygame.draw.rect(screen, RED, hard_rect)
+    hard_color = RED
+    if hard_rect.collidepoint(mouse_pos):
+        hard_color = LIGHT_RED
+    pygame.draw.rect(screen, hard_color, hard_rect, border_radius=10)
+    pygame.draw.rect(screen, WHITE, hard_rect, 4, border_radius=10)
     hard_text = LEVEL_FONT.render("Hard", True, BLACK)
     screen.blit(hard_text, hard_text.get_rect(center=hard_rect.center))
 
@@ -1568,6 +1715,8 @@ def main():
     while True:
         clock.tick(FPS)
         
+        mouse_pos = pygame.mouse.get_pos()
+        
         # --- Event Handling (Menus) ---
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
@@ -1575,33 +1724,32 @@ def main():
                 return
             
             if event.type == pygame.MOUSEBUTTONDOWN:
-                mouse_pos = pygame.mouse.get_pos()
-                
-                if app_state == 'MAIN_MENU':
-                    if start_button_rect.collidepoint(mouse_pos):
-                        app_state = 'DIFFICULTY_SELECT'
-                        
-                elif app_state == 'DIFFICULTY_SELECT':
-                    difficulty = None
-                    if easy_button_rect.collidepoint(mouse_pos):
-                        difficulty = "Easy"
-                    elif medium_button_rect.collidepoint(mouse_pos):
-                        difficulty = "Medium"
-                    elif hard_button_rect.collidepoint(mouse_pos):
-                        difficulty = "Hard"
-                        
-                    if difficulty:
-                        # Start the game. run_game will loop until game over.
-                        run_game(difficulty)
-                        # When game is over, return to main menu
-                        app_state = 'MAIN_MENU'
+                if event.button == 1: # Left click
+                    if app_state == 'MAIN_MENU':
+                        if start_button_rect.collidepoint(mouse_pos):
+                            app_state = 'DIFFICULTY_SELECT'
+                            
+                    elif app_state == 'DIFFICULTY_SELECT':
+                        difficulty = None
+                        if easy_button_rect.collidepoint(mouse_pos):
+                            difficulty = "Easy"
+                        elif medium_button_rect.collidepoint(mouse_pos):
+                            difficulty = "Medium"
+                        elif hard_button_rect.collidepoint(mouse_pos):
+                            difficulty = "Hard"
+                            
+                        if difficulty:
+                            # Start the game. run_game will loop until game over.
+                            run_game(difficulty)
+                            # When game is over, return to main menu
+                            app_state = 'MAIN_MENU'
 
         # --- Drawing (Menus) ---
         screen.fill(SKY_COLOR)
         if app_state == 'MAIN_MENU':
-            draw_main_menu(start_button_rect)
+            draw_main_menu(start_button_rect, mouse_pos)
         elif app_state == 'DIFFICULTY_SELECT':
-            draw_difficulty_select(easy_button_rect, medium_button_rect, hard_button_rect)
+            draw_difficulty_select(easy_button_rect, medium_button_rect, hard_button_rect, mouse_pos)
         
         pygame.display.flip()
 
