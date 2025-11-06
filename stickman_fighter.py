@@ -7,10 +7,10 @@ pygame.init()
 pygame.font.init()
 
 # --- Game Constants ---
-SCREEN_WIDTH = 1280 # Increased screen size
-SCREEN_HEIGHT = 720 # Increased screen size
+SCREEN_WIDTH = 1600 # Made screen wider
+SCREEN_HEIGHT = 900 # Made screen taller
 FPS = 60
-GROUND_Y = 620 # Adjusted ground for new size
+GROUND_Y = 800 # Adjusted ground for new size
 SKY_COLOR = (20, 20, 40)
 GROUND_COLOR = (50, 50, 50)
 GAME_DURATION_SECONDS = 60 # 1 minute timer
@@ -83,6 +83,8 @@ all_powerups = [
     {'name': 'Air Dash', 'effect': 'max_air_dash', 'value': 1, 'desc': '+1 Max Air Dash'},
     {'name': 'Ultimate Aura', 'effect': 'ult_aura', 'value': 1, 'desc': '+Dmg/Speed when Ult is full'}
 ]
+# Powerups the AI can receive
+ai_powerups = [p for p in all_powerups if p['effect'] not in ['full_heal', 'ult_aura', 'ult_charge_rate']]
 
 class Particle:
     """
@@ -137,7 +139,7 @@ class Projectile:
     """
     A fireball special move.
     """
-    def __init__(self, x, y, direction, color, damage): # Added damage
+    def __init__(self, x, y, direction, color, damage, is_player_projectile): # Added damage
         self.x = int(x)
         self.y = int(y)
         self.direction = direction
@@ -145,6 +147,7 @@ class Projectile:
         self.vel = 12 * direction
         self.radius = 15 # Made it bigger
         self.damage = damage # Use passed-in damage
+        self.is_player_projectile = is_player_projectile
 
     def update(self):
         self.x += self.vel
@@ -371,14 +374,21 @@ class Stickman:
         if self.is_ulting and self.ult_step == 1:
             arm1_end = (int(self.x - self.width * 0.3 * self.direction), int(self.y - self.height * 0.8))
             arm2_end = (int(self.x + self.width * 0.3 * self.direction), int(self.y - self.height * 0.8))
-
+            
         # --- Draw Ultimate Aura ---
+        aura_color = None
         if self.has_ult_aura and self.ultimate_charge == self.max_ultimate_charge and not self.is_ulting:
+            aura_color = YELLOW
+        elif self.is_ulting and self.ult_step == 2 and not self.is_player: # Shadow Barrage aura
+             aura_color = PURPLE
+            
+        if aura_color:
             aura_radius = 20 + abs(math.sin(pygame.time.get_ticks() * 0.01) * 10) # Pulsing radius
             aura_alpha = 100 + abs(math.sin(pygame.time.get_ticks() * 0.01) * 50) # Pulsing alpha
             aura_surf = pygame.Surface((aura_radius * 2, aura_radius * 2), pygame.SRCALPHA)
-            pygame.draw.circle(aura_surf, (YELLOW + (aura_alpha,)), (aura_radius, aura_radius), aura_radius)
+            pygame.draw.circle(aura_surf, (aura_color[0], aura_color[1], aura_color[2], aura_alpha), (aura_radius, aura_radius), aura_radius)
             surface.blit(aura_surf, (self.x - aura_radius, self.y - self.height/2 - aura_radius/2))
+
 
         # Draw body parts
         pygame.draw.circle(surface, draw_color, head_pos, int(self.height * 0.1)) # Head
@@ -391,20 +401,24 @@ class Stickman:
         # --- Arm-end (Gloves / Hands) ---
         arm1_hand_pos = (arm1_end[0], arm1_end[1])
         arm2_hand_pos = (arm2_end[0], arm2_end[1])
-
+        
         # --- "Skin" ---
+        ult_ready_color = YELLOW if (self.has_ult_aura and self.ultimate_charge == self.max_ultimate_charge) else None
+
         if self.is_player:
             # Player headband
             headband_y = head_pos[1]
-            pygame.draw.line(surface, WHITE, 
+            headband_color = ult_ready_color if ult_ready_color else WHITE
+            pygame.draw.line(surface, headband_color, 
                              (head_pos[0] - int(self.height * 0.1), headband_y), 
                              (head_pos[0] + int(self.height * 0.1), headband_y), 4)
             # Player cape
             cape_start = (int(self.x - (3 * self.direction)), int(self.y - self.height * 0.65))
             pygame.draw.rect(surface, BLUE, (cape_start[0], cape_start[1], 8, 30))
             # Player gloves
-            pygame.draw.circle(surface, BLUE, arm1_hand_pos, 8)
-            pygame.draw.circle(surface, BLUE, arm2_hand_pos, 8)
+            glove_color = ult_ready_color if ult_ready_color else BLUE
+            pygame.draw.circle(surface, glove_color, arm1_hand_pos, 8)
+            pygame.draw.circle(surface, glove_color, arm2_hand_pos, 8)
             
         else:
             # Enemy "angry eyes"
@@ -429,6 +443,12 @@ class Stickman:
             # Enemy Belt
             belt_y = int(self.y - self.height * 0.4)
             pygame.draw.rect(surface, RED, (self.x - 10, belt_y - 3, 20, 6))
+            
+            # Enemy Shoulder Pads
+            shoulder_y = int(self.y - self.height * 0.7)
+            shoulder_x_off = int(self.width * 0.1) * self.direction
+            pygame.draw.rect(surface, RED, (self.x - shoulder_x_off - 5, shoulder_y - 5, 10, 10))
+            pygame.draw.rect(surface, RED, (self.x + shoulder_x_off - 5, shoulder_y - 5, 10, 10))
             
             # Enemy hands
             pygame.draw.circle(surface, RED, arm1_hand_pos, 8)
@@ -672,7 +692,7 @@ class Stickman:
         if self.dodge_cooldown == 0 and self.on_ground:
             # 1. Dodge Projectiles
             for p in projectiles:
-                if p.direction == 1: # Player's projectile
+                if p.is_player_projectile: # Player's projectile
                     proj_dist = self.x - p.x
                     if 0 < proj_dist < 300 and abs(self.y - p.y) < 50:
                         if random.random() < 0.9: # 90% dodge chance
@@ -1459,6 +1479,30 @@ def run_game(difficulty):
             enemy.speed = 7
             enemy.stomp_damage = 10 * (enemy_damage / 5) # Scale stomp too
             
+            # --- Apply Enemy Powerups (Hard Mode) ---
+            if difficulty == "Hard" and current_level > 1 and (current_level - 1) % 3 == 0:
+                choice = random.choice(ai_powerups)
+                effect = choice['effect']
+                value = choice['value']
+                
+                if effect == 'max_health':
+                    enemy.max_health += value
+                    enemy.health = enemy.max_health
+                elif effect == 'damage':
+                    enemy.damage += value
+                elif effect == 'speed':
+                    enemy.speed_multiplier += 0.1 # AI speed is a multiplier
+                elif effect == 'special_cd':
+                    enemy.max_special_cooldown = max(30, enemy.max_special_cooldown + value)
+                elif effect == 'dash_cd':
+                    enemy.max_dash_cooldown = max(30, enemy.max_dash_cooldown + value)
+                elif effect == 'teleport_cd':
+                    enemy.max_teleport_cooldown = max(30, enemy.max_teleport_cooldown + value)
+                # Other powerups are fine to add
+                
+                text_animations.append(TextAnimation(f"Enemy {choice['name']}!", enemy.x, enemy.y - 150, RED, font=LEVEL_FONT, lifespan=60))
+
+
             # Reset timers
             round_start_time = pygame.time.get_ticks()
             time_remaining = GAME_DURATION_SECONDS
@@ -1493,26 +1537,29 @@ def run_game(difficulty):
             # --- Handle Projectile Spawning ---
             if game_over_timer == 0:
                 if player.is_attacking and player.attack_type == "fireball" and player.attack_frame == 5:
-                    projectiles.append(Projectile(player.x, player.y - player.height * 0.7, player.direction, PURPLE, player.fireball_damage))
+                    projectiles.append(Projectile(player.x, player.y - player.height * 0.7, player.direction, PURPLE, player.fireball_damage, True))
                 
                 if enemy.is_attacking and enemy.attack_type == "fireball" and enemy.attack_frame == 5:
-                    projectiles.append(Projectile(enemy.x, enemy.y - enemy.height * 0.7, enemy.direction, RED, enemy.fireball_damage))
+                    projectiles.append(Projectile(enemy.x, enemy.y - enemy.height * 0.7, enemy.direction, RED, enemy.fireball_damage, False))
 
             # --- Update Effects ---
             for p in projectiles[:]:
                 p.update()
                 if not (0 < p.x < SCREEN_WIDTH):
-                    projectiles.remove(p)
+                    if p in projectiles:
+                        projectiles.remove(p)
             
             for p in particles[:]:
                 p.update()
                 if p.lifespan <= 0:
-                    particles.remove(p)
+                    if p in particles:
+                        particles.remove(p)
             
             for ta in text_animations[:]:
                 ta.update()
                 if ta.lifespan <= 0:
-                    text_animations.remove(ta)
+                    if ta in text_animations:
+                        text_animations.remove(ta)
 
             # --- Check Collisions ---
             if game_over_timer == 0:
@@ -1568,15 +1615,34 @@ def run_game(difficulty):
                         particles.append(Particle(enemy.attack_hitbox.centerx, enemy.attack_hitbox.centery, YELLOW))
                     enemy.attack_hitbox = None
                 
-                # Check projectile collisions
+                # --- Projectile Collisions ---
+                
+                # Projectile vs Projectile (Clash)
+                for p1 in projectiles[:]:
+                    for p2 in projectiles[:]:
+                        if p1 == p2:
+                            continue
+                        if p1.is_player_projectile != p2.is_player_projectile:
+                            if p1.get_hitbox().colliderect(p2.get_hitbox()):
+                                # CLASH
+                                for _ in range(15):
+                                    particles.append(Particle(p1.x, p1.y, ORANGE))
+                                text_animations.append(TextAnimation("CLASH!", p1.x, p1.y, WHITE, lifespan=20))
+                                if p1 in projectiles:
+                                    projectiles.remove(p1)
+                                if p2 in projectiles:
+                                    projectiles.remove(p2)
+                                break # Move to next p1
+                
+                # Projectile vs Stickman
                 for p in projectiles[:]:
                     proj_hitbox = p.get_hitbox()
-                    if p.direction == 1 and enemy_hitbox.colliderect(proj_hitbox): # Player's fireball
+                    if p.is_player_projectile and enemy_hitbox.colliderect(proj_hitbox): # Player's fireball
                         enemy.take_damage(p.damage, p.x)
                         player.ultimate_charge += (15 + player.ult_charge_rate)
                         for _ in range(10): particles.append(Particle(p.x, p.y, p.color))
                         if p in projectiles: projectiles.remove(p)
-                    elif p.direction == -1 and player_hitbox.colliderect(proj_hitbox): # Enemy's fireball
+                    elif not p.is_player_projectile and player_hitbox.colliderect(proj_hitbox): # Enemy's fireball
                         player.take_damage(p.damage, p.x)
                         enemy.ultimate_charge = min(enemy.ultimate_charge + 15, enemy.max_ultimate_charge)
                         for _ in range(10): particles.append(Particle(p.x, p.y, p.color))
@@ -1705,7 +1771,7 @@ def main():
     """Main application loop."""
     app_state = 'MAIN_MENU' # MAIN_MENU, DIFFICULTY_SELECT
     
-    # --- Button Rects for Menus ---
+    # --- Button Rects for Menus (Adjusted for 1600x900) ---
     start_button_rect = pygame.Rect(SCREEN_WIDTH / 2 - 150, SCREEN_HEIGHT / 2 - 40, 300, 80)
     
     easy_button_rect = pygame.Rect(SCREEN_WIDTH / 2 - 150, SCREEN_HEIGHT / 2 - 100, 300, 80)
