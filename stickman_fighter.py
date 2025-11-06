@@ -46,6 +46,8 @@ projectiles = []
 particles = []
 text_animations = []
 platforms = []
+player = None
+enemy = None
 
 # --- Starry Sky (Static) ---
 stars = []
@@ -63,10 +65,10 @@ all_powerups = [
     {'name': 'Dash Cooldown', 'effect': 'dash_cd', 'value': -15, 'desc': 'Dash Recharges Faster'},
     {'name': 'Teleport Cooldown', 'effect': 'teleport_cd', 'value': -20, 'desc': 'Teleport Recharges Faster'},
     {'name': 'Full Heal', 'effect': 'full_heal', 'value': 0, 'desc': 'Restores all HP (for next level)'},
-    # New Damage Powerups
     {'name': 'Critical Hit', 'effect': 'crit_chance', 'value': 0.1, 'desc': '+10% Crit Chance (2x Dmg)'},
     {'name': 'Fireball Damage', 'effect': 'fireball_damage', 'value': 10, 'desc': '+10 Fireball Damage'},
-    {'name': 'Stomp Damage', 'effect': 'stomp_damage', 'value': 15, 'desc': '+15 Air Attack Damage'}
+    {'name': 'Stomp Damage', 'effect': 'stomp_damage', 'value': 15, 'desc': '+15 Air Attack Damage'},
+    {'name': 'Ultimate Charge', 'effect': 'ult_charge_rate', 'value': 5, 'desc': '+5 Bonus Ult Charge on Hit'}
 ]
 
 class Particle:
@@ -175,6 +177,8 @@ class Stickman:
         self.crit_chance = 0.0
         self.fireball_damage = 30
         self.stomp_damage = 15
+        self.ultimate_damage = 75 # Player ult damage
+        self.ult_charge_rate = 0 # Bonus ult charge
         
         self.is_attacking = False
         self.attack_type = "punch"
@@ -195,6 +199,7 @@ class Stickman:
         self.ult_step = 0 # 0: inactive, 1: rising/paused, 2: slamming
         self.ult_timer = 0
         self.ult_target_x = 0
+        self.ult_hit_count = 0 # For enemy ult
         
         self.dodge_cooldown = 0
         
@@ -245,6 +250,10 @@ class Stickman:
         # Ultimate "charging" flash
         if self.is_ulting and self.ult_step == 1:
             draw_color = YELLOW if (self.ult_timer // 3) % 2 == 0 else self.color
+        
+        # Enemy ult "shadow" flash
+        if self.is_ulting and self.ult_step == 2 and not self.is_player:
+            draw_color = PURPLE if (self.ult_timer // 2) % 2 == 0 else BLACK
             
         head_pos = (int(self.x), int(self.y - self.height * 0.9))
         body_start = head_pos
@@ -333,6 +342,12 @@ class Stickman:
                 leg2_end = (int(self.x + self.width * 0.2 * self.direction), int(self.y - self.height * 0.1))
                 arm1_end = (int(self.x - self.width * 0.4 * self.direction), int(self.y - self.height * 0.3))
                 arm2_end = (int(self.x + self.width * 0.4 * self.direction), int(self.y - self.height * 0.3))
+            elif self.attack_type == "shadow_punch":
+                # Rapid punch animation
+                if self.direction == 1:
+                    arm2_end = (int(self.x + self.width * 0.7 * self.direction), int(self.y - self.height * 0.7))
+                else:
+                    arm1_end = (int(self.x + self.width * 0.7 * self.direction), int(self.y - self.height * 0.7))
         
         # Ult charging pose
         if self.is_ulting and self.ult_step == 1:
@@ -584,9 +599,19 @@ class Stickman:
                     
     def update_ai(self, player):
         """Controls the enemy AI."""
-        if not self.is_alive or self.is_dying or self.is_stunned > 0 or self.is_dashing or self.is_hit:
+        if not self.is_alive or self.is_dying or self.is_stunned > 0 or self.is_dashing or self.is_hit or self.is_ulting:
             self.vel_x = 0
             return
+        
+        # --- AI ULTIMATE ---
+        if self.ultimate_charge == self.max_ultimate_charge and self.on_ground:
+            self.is_ulting = True
+            self.ult_step = 1 # Teleport step
+            self.ultimate_charge = 0
+            self.dash_invulnerability = 60 # Invulnerable for 1 sec
+            self.is_attacking = False # Stop other attacks
+            self.is_blocking = False
+            text_animations.append(TextAnimation("SHADOW BARRAGE!", self.x, self.y - 150, PURPLE, font=LEVEL_FONT, lifespan=60))
         
         if self.dash_cooldown > 0:
             self.dash_cooldown -= 1
@@ -621,7 +646,7 @@ class Stickman:
                             break
             # 2. Dodge/Block Melee
             distance = abs(player.x - self.x)
-            if player.is_attacking and distance < 120 and self.dodge_cooldown == 0:
+            if (player.is_attacking or (player.is_ulting and player.ult_step == 2)) and distance < 120 and self.dodge_cooldown == 0: # Also dodge meteor
                 roll = random.random()
                 if roll < 0.4: # 40% chance to block
                     self.is_blocking = True
@@ -728,6 +753,8 @@ class Stickman:
 
     def update(self):
         """Updates the stickman's state each frame."""
+        global player, enemy # Add this line to access the global player/enemy
+        
         # Handle stun
         if self.is_stunned > 0:
             self.is_stunned -= 1
@@ -761,23 +788,61 @@ class Stickman:
         # --- ULTIMATE UPDATE ---
         if self.is_ulting:
             self.dash_invulnerability = 10 # Stay invulnerable
-            if self.ult_step == 1: # Paused in air
-                self.vel_x = 0
-                self.vel_y = 0
-                self.x = self.ult_target_x
-                self.y = 100
-                self.ult_timer -= 1
-                # Spawn charging particles
-                if self.ult_timer % 5 == 0:
-                    particles.append(Particle(self.x + random.randint(-20, 20), self.y, YELLOW))
-                if self.ult_timer <= 0:
+            
+            if self.is_player:
+                # --- Player Ult: Meteor Slam ---
+                if self.ult_step == 1: # Paused in air
+                    self.vel_x = 0
+                    self.vel_y = 0
+                    self.x = self.ult_target_x
+                    self.y = 100
+                    self.ult_timer -= 1
+                    # Spawn charging particles
+                    if self.ult_timer % 5 == 0:
+                        particles.append(Particle(self.x + random.randint(-20, 20), self.y, YELLOW))
+                    if self.ult_timer <= 0:
+                        self.ult_step = 2
+                elif self.ult_step == 2: # Slamming down
+                    self.is_attacking = True
+                    self.attack_type = "ultimate_pound"
+                    self.attack_frame = 2 # Keep it active
+                    self.vel_y = 40 # Rocket down
+                    self.vel_x = 0
+            
+            else:
+                # --- Enemy Ult: Shadow Barrage ---
+                if self.ult_step == 1: # Teleporting
+                    # Find player
+                    enemy = [s for s in [player, enemy] if not s.is_player][0]
+                    player = [s for s in [player, enemy] if s.is_player][0]
+                    # Teleport behind player
+                    self.x = player.x - (player.direction * 60)
+                    self.y = player.y
+                    self.direction = player.direction
+                    self.vel_x = 0
+                    self.vel_y = 0
                     self.ult_step = 2
-            elif self.ult_step == 2: # Slamming down
-                self.is_attacking = True
-                self.attack_type = "ultimate_pound"
-                self.attack_frame = 2 # Keep it active
-                self.vel_y = 40 # Rocket down
-                self.vel_x = 0
+                    self.ult_timer = 40 # Duration of the barrage
+                    self.ult_hit_count = 5 # 5 hits
+                
+                elif self.ult_step == 2: # Barraging
+                    self.vel_x = 0
+                    self.vel_y = 0
+                    self.ult_timer -= 1
+                    # At specific frames, do an attack
+                    if self.ult_timer % 8 == 0 and self.ult_hit_count > 0:
+                        self.is_attacking = True
+                        self.attack_type = "shadow_punch"
+                        self.attack_frame = 5
+                        self.ult_hit_count -= 1
+                        # Create purple particles for shadow effect
+                        for _ in range(5):
+                            particles.append(Particle(self.x, self.y - 50, PURPLE))
+                    
+                    if self.ult_timer <= 0:
+                        self.is_ulting = False
+                        self.ult_step = 0
+                        self.is_attacking = False
         # --- END ULTIMATE UPDATE ---
             
         # Handle dying animation first
@@ -813,7 +878,7 @@ class Stickman:
         if self.is_attacking and self.attack_type == "ground_pound":
             self.vel_y = 25
         
-        if not (self.is_ulting and self.ult_step == 1): # Don't apply y vel if charging ult
+        if not (self.is_ulting and (self.ult_step == 1 or (not self.is_player and self.ult_step == 2))): # Don't apply y vel if charging or shadow barraging
             self.y += self.vel_y
         
         # Apply horizontal movement
@@ -883,6 +948,10 @@ class Stickman:
                 self.vel_y = 40 # Keep moving down fast
                 # Hitbox is a LARGE area around the feet
                 self.attack_hitbox = pygame.Rect(self.x - 80, self.y - 40, 160, 60)
+            elif self.attack_type == "shadow_punch":
+                hitbox_x = self.x + (self.width * 0.5 * self.direction)
+                hitbox_y = self.y - self.height * 0.7
+                self.attack_hitbox = pygame.Rect(hitbox_x, hitbox_y, self.width * 0.6, self.height * 0.2)
             # No hitbox for fireball, it creates a projectile
             
             # End attack
@@ -894,8 +963,6 @@ class Stickman:
             if (self.attack_type == "air_kick" or self.attack_type == "ground_pound" or self.attack_type == "ultimate_pound") and self.on_ground:
                 self.is_attacking = False
                 self.attack_hitbox = None
-                self.is_ulting = False # Ensure ult state resets
-                self.ult_step = 0
                 
                 # Add a shockwave effect
                 if self.attack_type == "ground_pound" or self.attack_type == "ultimate_pound":
@@ -908,6 +975,11 @@ class Stickman:
                         p.vel_x = random.uniform(-5, 5)
                         p.vel_y = random.uniform(-3, 0) # Only go up/out
                         particles.append(p)
+                
+                # Reset ult state AFTER landing
+                if self.attack_type == "ultimate_pound":
+                    self.is_ulting = False
+                    self.ult_step = 0
                 
     def get_hitbox(self):
         """Returns the main body hitbox."""
@@ -1016,11 +1088,24 @@ def draw_health_bars(player, enemy):
     special_charge_enemy = (enemy.max_special_cooldown - enemy.special_cooldown) / enemy.max_special_cooldown
     special_text_enemy = SPECIAL_FONT.render('SPECIAL', True, GRAY if special_charge_enemy < 1.0 else YELLOW)
     text_width = special_text_enemy.get_width()
-    screen.blit(special_text_enemy, (SCREEN_WIDTH - text_width - 60, 90))
+    text_x_pos = SCREEN_WIDTH - text_width - 60
+    screen.blit(special_text_enemy, (text_x_pos, 90))
     bar_outline_x = SCREEN_WIDTH - special_bar_width - text_width - 70
     pygame.draw.rect(screen, GRAY, (bar_outline_x, 95, special_bar_width, special_bar_height), 2)
     fill_width = special_bar_width * special_charge_enemy
     pygame.draw.rect(screen, RED, (bar_outline_x, 95, fill_width, special_bar_height))
+    
+    # Enemy Ultimate Bar (FIXED ALIGNMENT)
+    ult_charge_enemy = enemy.ultimate_charge / enemy.max_ultimate_charge
+    ult_text_enemy = SPECIAL_FONT.render('ULTIMATE', True, GRAY if ult_charge_enemy < 1.0 else ORANGE)
+    text_width_ult = ult_text_enemy.get_width()
+    text_x_pos_ult = SCREEN_WIDTH - text_width_ult - 60
+    screen.blit(ult_text_enemy, (text_x_pos_ult, 115))
+    bar_outline_x_ult = SCREEN_WIDTH - special_bar_width - text_width_ult - 70 # Aligns with the text
+    pygame.draw.rect(screen, GRAY, (bar_outline_x_ult, 120, special_bar_width, special_bar_height), 2)
+    fill_width_ult = special_bar_width * ult_charge_enemy
+    pygame.draw.rect(screen, YELLOW, (bar_outline_x_ult, 120, fill_width_ult, special_bar_height))
+
 
 def draw_level_start(level):
     """Displays the current level number before the round starts."""
@@ -1099,9 +1184,9 @@ def draw_powerup_screen(selected_powerups):
 
     pygame.display.flip()
 
-def main():
+def run_game(difficulty):
     """Main game loop."""
-    global projectiles, particles, text_animations, platforms
+    global projectiles, particles, text_animations, platforms, player, enemy # Make player/enemy global for AI Ult
 
     # Player stats that persist between levels
     player_stats = {
@@ -1114,6 +1199,8 @@ def main():
         'crit_chance': 0.0,
         'fireball_damage': 30,
         'stomp_damage': 15,
+        'ultimate_damage': 75,
+        'ult_charge_rate': 0,
         'ultimate_charge': 0,
         'max_ultimate_charge': 100,
         'full_heal_next_level': False
@@ -1132,9 +1219,8 @@ def main():
     game_over_timer = 0
     game_over_pending = ""
 
-    # Main application loop
+    # This loop handles level progression
     while True:
-        clock.tick(FPS)
         
         # --- Event Handling (Global) ---
         for event in pygame.event.get():
@@ -1145,8 +1231,7 @@ def main():
             # State-specific event handling
             if game_state == 'GAME_OVER' or game_state == 'GAME_WON':
                 if event.type == pygame.KEYDOWN and event.key == pygame.K_r:
-                    # Reset game
-                    main()
+                    # Exit the game loop and return to main menu
                     return
             
             elif game_state == 'POWERUP':
@@ -1207,6 +1292,8 @@ def main():
             player.crit_chance = player_stats['crit_chance']
             player.fireball_damage = player_stats['fireball_damage']
             player.stomp_damage = player_stats['stomp_damage']
+            player.ultimate_damage = player_stats['ultimate_damage']
+            player.ult_charge_rate = player_stats['ult_charge_rate']
             player.ultimate_charge = player_stats['ultimate_charge'] # Carry over ult charge
             player.max_ultimate_charge = player_stats['max_ultimate_charge']
 
@@ -1219,12 +1306,28 @@ def main():
                 10: (400, 1.5, 20) # Boss level
             }
             stats = level_stats.get(current_level, level_stats[10]) # Get stats or default to max
+            base_health, base_speed_mult, base_damage = stats
+            
+            # --- Apply Difficulty Modifiers ---
+            if difficulty == "Easy":
+                enemy_health = base_health * 0.75
+                enemy_damage = base_damage * 0.8
+                enemy_speed = base_speed_mult * 0.9
+            elif difficulty == "Hard":
+                enemy_health = base_health * 1.3
+                enemy_damage = base_damage * 1.25
+                enemy_speed = base_speed_mult * 1.15
+            else: # Medium
+                enemy_health = base_health
+                enemy_damage = base_damage
+                enemy_speed = base_speed_mult
             
             enemy = Stickman(SCREEN_WIDTH - 200, GROUND_Y, RED, is_player=False)
-            enemy.max_health = stats[0]
-            enemy.health = stats[0]
-            enemy.speed_multiplier = stats[1]
-            enemy.damage = stats[2]
+            enemy.max_health = enemy_health
+            enemy.health = enemy_health
+            enemy.speed_multiplier = enemy_speed
+            enemy.damage = enemy_damage
+            enemy.stomp_damage = 10 * (enemy_damage / 5) # Scale stomp too
             
             # Reset timers
             round_start_time = pygame.time.get_ticks()
@@ -1235,6 +1338,7 @@ def main():
             game_state = 'PLAYING'
             
         elif game_state == 'PLAYING':
+            clock.tick(FPS)
             # --- Main Update Loop ---
             
             # --- Timer Update ---
@@ -1289,30 +1393,31 @@ def main():
                 if player.attack_hitbox and enemy_hitbox.colliderect(player.attack_hitbox):
                     # Check for crit
                     is_crit = random.random() < player.crit_chance
+                    crit_bonus_ult = 5 if is_crit else 0
                     
                     # Check for attack type
                     if player.attack_type == "punch" or player.attack_type == "kick":
                         dmg = player.damage * 2 if is_crit else player.damage
                         enemy.take_damage(dmg, player.x)
-                        player.ultimate_charge += 15 if is_crit else 10
+                        player.ultimate_charge += (10 + player.ult_charge_rate + crit_bonus_ult)
                         if is_crit:
                             text_animations.append(TextAnimation("CRIT!", player.attack_hitbox.centerx, player.attack_hitbox.centery, YELLOW, font=LEVEL_FONT, lifespan=30))
                     
                     elif player.attack_type == "air_kick" or player.attack_type == "ground_pound":
                         dmg = player.stomp_damage * 2 if is_crit else player.stomp_damage
                         enemy.take_damage(dmg, player.x)
-                        player.ultimate_charge += 25 if is_crit else 15
+                        player.ultimate_charge += (15 + player.ult_charge_rate + crit_bonus_ult)
                         if is_crit:
                             text_animations.append(TextAnimation("CRIT!", player.attack_hitbox.centerx, player.attack_hitbox.centery, YELLOW, font=LEVEL_FONT, lifespan=30))
                     
                     elif player.attack_type == "ultimate_pound":
-                        enemy.take_damage(100, player.x) # Ult damage
+                        enemy.take_damage(player.ultimate_damage, player.x) # Ult damage
                         player.ultimate_charge += 20 # Bonus for landing
-                        # Knockback
+                        # Knockback (Increased)
                         enemy.is_hit = True
                         enemy.hit_anim_timer = 45
-                        enemy.vel_y = -20
-                        enemy.vel_x = 15 * -player.direction
+                        enemy.vel_y = -25
+                        enemy.vel_x = 25 * -player.direction
                     
                     for _ in range(5):
                         particles.append(Particle(player.attack_hitbox.centerx, player.attack_hitbox.centery, YELLOW))
@@ -1323,8 +1428,12 @@ def main():
                     dmg = enemy.damage
                     if enemy.attack_type == "air_kick" or enemy.attack_type == "ground_pound":
                         dmg = enemy.stomp_damage
+                    elif enemy.attack_type == "shadow_punch":
+                        dmg = enemy.damage * 0.75 # Ult hits are fast but weaker
                     
                     player.take_damage(dmg, enemy.x)
+                    enemy.ultimate_charge = min(enemy.ultimate_charge + 15, enemy.max_ultimate_charge)
+                    
                     for _ in range(5):
                         particles.append(Particle(enemy.attack_hitbox.centerx, enemy.attack_hitbox.centery, YELLOW))
                     enemy.attack_hitbox = None
@@ -1334,16 +1443,18 @@ def main():
                     proj_hitbox = p.get_hitbox()
                     if p.direction == 1 and enemy_hitbox.colliderect(proj_hitbox): # Player's fireball
                         enemy.take_damage(p.damage, p.x)
-                        player.ultimate_charge += 15
+                        player.ultimate_charge += (15 + player.ult_charge_rate)
                         for _ in range(10): particles.append(Particle(p.x, p.y, p.color))
                         if p in projectiles: projectiles.remove(p)
                     elif p.direction == -1 and player_hitbox.colliderect(proj_hitbox): # Enemy's fireball
                         player.take_damage(p.damage, p.x)
+                        enemy.ultimate_charge = min(enemy.ultimate_charge + 15, enemy.max_ultimate_charge)
                         for _ in range(10): particles.append(Particle(p.x, p.y, p.color))
                         if p in projectiles: projectiles.remove(p)
                 
                 # Cap ultimate charge
                 player.ultimate_charge = min(player.ultimate_charge, player.max_ultimate_charge)
+                enemy.ultimate_charge = min(enemy.ultimate_charge, enemy.max_ultimate_charge)
 
             # --- Check for Game Over Conditions ---
             if game_over_timer == 0:
@@ -1398,12 +1509,101 @@ def main():
 
         elif game_state == 'POWERUP':
             draw_powerup_screen(selected_powerups)
+            pygame.display.flip()
             
         elif game_state == 'GAME_OVER':
             draw_game_over_screen("You Lose!")
+            pygame.display.flip()
             
         elif game_state == 'GAME_WON':
             draw_game_over_screen("You Beat The Game!")
+            pygame.display.flip()
+
+def draw_main_menu(start_button):
+    """Draws the main title screen and start button."""
+    screen.fill(SKY_COLOR)
+    title_text = GAME_OVER_FONT.render("Stickman Fighter", True, YELLOW)
+    title_rect = title_text.get_rect(center=(SCREEN_WIDTH / 2, SCREEN_HEIGHT / 2 - 150))
+    screen.blit(title_text, title_rect)
+    
+    # Draw Start Button
+    pygame.draw.rect(screen, GREEN, start_button)
+    start_text = LEVEL_FONT.render("START", True, BLACK)
+    start_rect = start_text.get_rect(center=start_button.center)
+    screen.blit(start_text, start_rect)
+
+def draw_difficulty_select(easy_rect, medium_rect, hard_rect):
+    """Draws the difficulty selection screen."""
+    screen.fill(SKY_COLOR)
+    title_text = POWERUP_TITLE_FONT.render("Choose Difficulty", True, WHITE)
+    title_rect = title_text.get_rect(center=(SCREEN_WIDTH / 2, 150))
+    screen.blit(title_text, title_rect)
+    
+    # Easy
+    pygame.draw.rect(screen, GREEN, easy_rect)
+    easy_text = LEVEL_FONT.render("Easy", True, BLACK)
+    screen.blit(easy_text, easy_text.get_rect(center=easy_rect.center))
+    
+    # Medium
+    pygame.draw.rect(screen, ORANGE, medium_rect)
+    medium_text = LEVEL_FONT.render("Medium", True, BLACK)
+    screen.blit(medium_text, medium_text.get_rect(center=medium_rect.center))
+    
+    # Hard
+    pygame.draw.rect(screen, RED, hard_rect)
+    hard_text = LEVEL_FONT.render("Hard", True, BLACK)
+    screen.blit(hard_text, hard_text.get_rect(center=hard_rect.center))
+
+def main():
+    """Main application loop."""
+    app_state = 'MAIN_MENU' # MAIN_MENU, DIFFICULTY_SELECT
+    
+    # --- Button Rects for Menus ---
+    start_button_rect = pygame.Rect(SCREEN_WIDTH / 2 - 150, SCREEN_HEIGHT / 2 - 40, 300, 80)
+    
+    easy_button_rect = pygame.Rect(SCREEN_WIDTH / 2 - 150, SCREEN_HEIGHT / 2 - 100, 300, 80)
+    medium_button_rect = pygame.Rect(SCREEN_WIDTH / 2 - 150, SCREEN_HEIGHT / 2 + 10, 300, 80)
+    hard_button_rect = pygame.Rect(SCREEN_WIDTH / 2 - 150, SCREEN_HEIGHT / 2 + 120, 300, 80)
+
+    while True:
+        clock.tick(FPS)
+        
+        # --- Event Handling (Menus) ---
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                pygame.quit()
+                return
+            
+            if event.type == pygame.MOUSEBUTTONDOWN:
+                mouse_pos = pygame.mouse.get_pos()
+                
+                if app_state == 'MAIN_MENU':
+                    if start_button_rect.collidepoint(mouse_pos):
+                        app_state = 'DIFFICULTY_SELECT'
+                        
+                elif app_state == 'DIFFICULTY_SELECT':
+                    difficulty = None
+                    if easy_button_rect.collidepoint(mouse_pos):
+                        difficulty = "Easy"
+                    elif medium_button_rect.collidepoint(mouse_pos):
+                        difficulty = "Medium"
+                    elif hard_button_rect.collidepoint(mouse_pos):
+                        difficulty = "Hard"
+                        
+                    if difficulty:
+                        # Start the game. run_game will loop until game over.
+                        run_game(difficulty)
+                        # When game is over, return to main menu
+                        app_state = 'MAIN_MENU'
+
+        # --- Drawing (Menus) ---
+        screen.fill(SKY_COLOR)
+        if app_state == 'MAIN_MENU':
+            draw_main_menu(start_button_rect)
+        elif app_state == 'DIFFICULTY_SELECT':
+            draw_difficulty_select(easy_button_rect, medium_button_rect, hard_button_rect)
+        
+        pygame.display.flip()
 
 if __name__ == "__main__":
     main()
