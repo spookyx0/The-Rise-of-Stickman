@@ -56,6 +56,7 @@ POWERUP_DESC_FONT = pygame.font.SysFont('Arial', 28)
 projectiles = []
 particles = []
 text_animations = []
+screen_shake = 0
 platforms = []
 player = None
 enemy = None
@@ -81,7 +82,9 @@ all_powerups = [
     {'name': 'Stomp Damage', 'effect': 'stomp_damage', 'value': 15, 'desc': '+15 Air Attack Damage'},
     {'name': 'Ultimate Charge', 'effect': 'ult_charge_rate', 'value': 5, 'desc': '+5 Bonus Ult Charge on Hit'},
     {'name': 'Air Dash', 'effect': 'max_air_dash', 'value': 1, 'desc': '+1 Max Air Dash'},
-    {'name': 'Ultimate Aura', 'effect': 'ult_aura', 'value': 1, 'desc': '+Dmg/Speed when Ult is full'}
+    {'name': 'Ultimate Aura', 'effect': 'ult_aura', 'value': 1, 'desc': '+Dmg/Speed when Ult is full'},
+    {'name': 'Lifesteal', 'effect': 'lifesteal', 'value': 0.05, 'desc': 'Heal 5% of damage dealt'},
+    {'name': 'Reflect Projectiles', 'effect': 'reflect_projectiles', 'value': 1, 'desc': 'Blocking reflects fireballs'}
 ]
 # Powerups the AI can receive
 ai_powerups = [p for p in all_powerups if p['effect'] not in ['full_heal', 'ult_aura', 'ult_charge_rate']]
@@ -197,6 +200,8 @@ class Stickman:
         self.stomp_damage = 15
         self.ultimate_damage = 75 # Player ult damage
         self.ult_charge_rate = 0 # Bonus ult charge
+        self.lifesteal = 0.0
+        self.can_reflect = False
         self.has_ult_aura = False
         
         self.is_attacking = False
@@ -229,6 +234,7 @@ class Stickman:
         self.death_anim_timer = 0
         
         self.is_blocking = False
+        self.parry_window = 0 # For parry mechanic
         self.is_stunned = 0
         
         self.is_hit = False # New state for hit animation
@@ -317,6 +323,10 @@ class Stickman:
             arm2_end = (int(self.x - self.width * 0.4 * self.direction), int(self.y - self.height * 0.8))
             leg1_end = (int(self.x - self.width * 0.2 * self.direction), int(self.y))
             leg2_end = (int(self.x + self.width * 0.2 * self.direction), int(self.y))
+            # Parry visual effect
+            if self.parry_window > 0:
+                pygame.draw.circle(surface, WHITE, (int(self.x + 20 * self.direction), int(self.y - 60)), 15, 3)
+
         elif not self.on_ground:
             # Jump pose (unless ulting)
             if not (self.is_ulting and self.ult_step == 1): # Don't do jump pose if charging ult
@@ -398,6 +408,12 @@ class Stickman:
         pygame.draw.line(surface, draw_color, arm1_start, arm1_end, 5) # Arm 1
         pygame.draw.line(surface, draw_color, arm2_start, arm2_end, 5) # Arm 2
         
+        # --- Stun Visual ---
+        if self.is_stunned > 0 and self.is_stunned % 10 < 5:
+            text_surf = SPECIAL_FONT.render("!!!", True, YELLOW)
+            text_rect = text_surf.get_rect(center=(self.x, self.y - self.height - 15))
+            surface.blit(text_surf, text_rect)
+
         # --- Arm-end (Gloves / Hands) ---
         arm1_hand_pos = (arm1_end[0], arm1_end[1])
         arm2_hand_pos = (arm2_end[0], arm2_end[1])
@@ -555,6 +571,7 @@ class Stickman:
         self.is_blocking = False # Default to not blocking
         if keys[pygame.K_s] and self.on_ground:
             self.is_blocking = True
+            self.parry_window = 10 # Parry is active for 10 frames
 
         # --- NORMAL MOVEMENT ---
         self.vel_x = 0
@@ -707,6 +724,7 @@ class Stickman:
                 if roll < 0.4: # 40% chance to block
                     self.is_blocking = True
                     self.vel_x = 0
+                    self.parry_window = 10 # AI can parry too
                     self.attack_cooldown = 30 # How long to hold block
                     self.dodge_cooldown = 40
                 elif roll < 0.8: # 40% chance to dodge
@@ -816,6 +834,7 @@ class Stickman:
             self.is_stunned -= 1
             self.vel_x = 0
             self.is_attacking = False
+            # Stun visual
             return
             
         # Handle hit stun
@@ -934,6 +953,10 @@ class Stickman:
             self.combo_timer -= 1
         if self.dodge_cooldown > 0:
             self.dodge_cooldown -= 1
+        
+        # Update parry window
+        if self.parry_window > 0:
+            self.parry_window -= 1
             
         # Apply gravity (only if not dashing or ulting)
         if not self.is_dashing and not self.is_ulting:
@@ -1034,6 +1057,7 @@ class Stickman:
                 # Add a shockwave effect
                 if self.attack_type == "ground_pound" or self.attack_type == "ultimate_pound":
                     pound_size = 15 if self.attack_type == "ground_pound" else 40
+                    screen_shake = 10 if self.attack_type == "ground_pound" else 20
                     pound_text = "STOMP!" if self.attack_type == "ground_pound" else "METEOR!"
                     text_animations.append(TextAnimation(pound_text, self.x, self.y - 50, ORANGE))
                     
@@ -1054,24 +1078,37 @@ class Stickman:
             return pygame.Rect(0, 0, 0, 0)
         return pygame.Rect(self.x - self.width * 0.25, self.y - self.height, self.width * 0.5, self.height)
 
-    def take_damage(self, damage, attacker_x):
-        """Reduces health when hit. Attacker_x is the x-coord of the attacker."""
+    def take_damage(self, damage, attacker):
+        """Reduces health when hit. Attacker is the other stickman object."""
+        global screen_shake
         if (self.is_alive and not self.is_dying) and self.dash_invulnerability == 0:
             
             # Check for Block
             if self.is_blocking:
                 # Check if the hit is from the front
-                is_hit_from_front = (attacker_x < self.x and self.direction == -1) or \
-                                    (attacker_x > self.x and self.direction == 1)
+                is_hit_from_front = (attacker.x < self.x and self.direction == -1) or \
+                                    (attacker.x > self.x and self.direction == 1)
                 
                 if is_hit_from_front:
-                    self.health -= damage * 0.2 # Blocked, take 20% damage
-                    self.hit_duration = 5
-                    text_animations.append(TextAnimation("Blocked", self.x, self.y - 150, GRAY))
-                    # Spawn block sparks
-                    for _ in range(3):
-                        particles.append(Particle(self.x + 20 * self.direction, self.y - 50, WHITE))
-                    return # Successfully blocked
+                    # --- PARRY LOGIC ---
+                    if self.parry_window > 0:
+                        attacker.is_stunned = 60 # Stun attacker for 1 second
+                        attacker.is_attacking = False # Cancel their attack
+                        text_animations.append(TextAnimation("PARRY!", self.x, self.y - 150, YELLOW, font=LEVEL_FONT, lifespan=40))
+                        for _ in range(15):
+                            particles.append(Particle(self.x + 30 * self.direction, self.y - 60, YELLOW))
+                        screen_shake = 15
+                        return # Successful parry
+
+                    # --- REGULAR BLOCK ---
+                    else:
+                        self.health -= damage * 0.2 # Blocked, take 20% damage
+                        self.hit_duration = 5
+                        text_animations.append(TextAnimation("Blocked", self.x, self.y - 150, GRAY))
+                        # Spawn block sparks
+                        for _ in range(3):
+                            particles.append(Particle(self.x + 20 * self.direction, self.y - 50, WHITE))
+                        return # Successfully blocked
                 else:
                     # Hit from behind while blocking! Fall through to normal hit.
                     pass
@@ -1083,6 +1120,7 @@ class Stickman:
             self.hit_anim_timer = 15 # 0.25 seconds
             self.is_attacking = False # Cancel current attack
             text_animations.append(TextAnimation("Hit!", self.x, self.y - 150, RED)) # Added Hit text
+            screen_shake = max(screen_shake, 5) # Add a small shake on hit
             if self.health <= 0:
                 self.health = 0
                 self.is_alive = False
@@ -1092,12 +1130,17 @@ class Stickman:
                 # Added Dead text
                 text_animations.append(TextAnimation("Dead", self.x, self.y - 150, RED, font=LEVEL_FONT, lifespan=60))
 
-def draw_background(surface):
+def draw_background(surface, shake_offset=(0,0)):
     """Draws the sky, stars, and ground."""
     global platforms
-    surface.fill(SKY_COLOR)
+    # Create a temporary surface to draw on, then blit it with the offset
+    temp_surface = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT))
+    temp_surface.fill(SKY_COLOR)
+
     for x, y in stars:
-        pygame.draw.rect(surface, WHITE, (x, y, 2, 2))
+        pygame.draw.rect(temp_surface, WHITE, (x, y, 2, 2))
+    surface.blit(temp_surface, shake_offset)
+
     # Draw all platforms
     for plat in platforms:
         pygame.draw.rect(surface, GRAY, plat)
@@ -1308,7 +1351,9 @@ def run_game(difficulty):
         'max_ultimate_charge': 100,
         'full_heal_next_level': False,
         'max_air_dash': 1,
-        'has_ult_aura': False
+        'has_ult_aura': False,
+        'lifesteal': 0.0,
+        'reflect_projectiles': False
     }
     
     current_level = 1
@@ -1360,6 +1405,10 @@ def run_game(difficulty):
                             player_stats['full_heal_next_level'] = True
                         elif effect == 'ult_aura':
                             player_stats['has_ult_aura'] = True
+                        elif effect == 'lifesteal':
+                            player_stats['lifesteal'] += value
+                        elif effect == 'reflect_projectiles':
+                            player_stats['reflect_projectiles'] = True
                         else:
                             player_stats[effect] += value
                             # Ensure cooldowns don't go below a minimum
@@ -1392,6 +1441,10 @@ def run_game(difficulty):
                             player_stats['full_heal_next_level'] = True
                         elif effect == 'ult_aura':
                             player_stats['has_ult_aura'] = True
+                        elif effect == 'lifesteal':
+                            player_stats['lifesteal'] += value
+                        elif effect == 'reflect_projectiles':
+                            player_stats['reflect_projectiles'] = True
                         else:
                             player_stats[effect] += value
                             if 'cd' in effect and player_stats[effect] < 30:
@@ -1443,6 +1496,8 @@ def run_game(difficulty):
             player.max_air_dash = player_stats['max_air_dash']
             player.air_dash_count = player.max_air_dash
             player.has_ult_aura = player_stats['has_ult_aura']
+            player.lifesteal = player_stats['lifesteal']
+            player.can_reflect = player_stats['reflect_projectiles']
 
             
             # Create Enemy
@@ -1513,6 +1568,7 @@ def run_game(difficulty):
             
         elif game_state == 'PLAYING':
             clock.tick(FPS)
+            global screen_shake
             # --- Main Update Loop ---
             
             # --- Timer Update ---
@@ -1574,22 +1630,26 @@ def run_game(difficulty):
                     
                     # Check for attack type
                     if player.attack_type == "punch" or player.attack_type == "kick":
-                        dmg = player.damage * 2 if is_crit else player.damage
-                        enemy.take_damage(dmg, player.x)
+                        dmg = player.damage * (2 if is_crit else 1)
+                        enemy.take_damage(dmg, player)
                         player.ultimate_charge += (10 + player.ult_charge_rate + crit_bonus_ult)
+                        player.health = min(player.max_health, player.health + (dmg * player.lifesteal)) # Lifesteal
                         if is_crit:
                             text_animations.append(TextAnimation("CRIT!", player.attack_hitbox.centerx, player.attack_hitbox.centery, YELLOW, font=LEVEL_FONT, lifespan=30))
                     
                     elif player.attack_type == "air_kick" or player.attack_type == "ground_pound":
-                        dmg = player.stomp_damage * 2 if is_crit else player.stomp_damage
-                        enemy.take_damage(dmg, player.x)
+                        dmg = player.stomp_damage * (2 if is_crit else 1)
+                        enemy.take_damage(dmg, player)
                         player.ultimate_charge += (15 + player.ult_charge_rate + crit_bonus_ult)
+                        player.health = min(player.max_health, player.health + (dmg * player.lifesteal)) # Lifesteal
                         if is_crit:
                             text_animations.append(TextAnimation("CRIT!", player.attack_hitbox.centerx, player.attack_hitbox.centery, YELLOW, font=LEVEL_FONT, lifespan=30))
                     
                     elif player.attack_type == "ultimate_pound":
-                        enemy.take_damage(player.ultimate_damage, player.x) # Ult damage
+                        dmg = player.ultimate_damage
+                        enemy.take_damage(dmg, player) # Ult damage
                         player.ultimate_charge += 20 # Bonus for landing
+                        player.health = min(player.max_health, player.health + (dmg * player.lifesteal)) # Lifesteal
                         # Knockback (Increased)
                         enemy.is_hit = True
                         enemy.hit_anim_timer = 45
@@ -1608,7 +1668,7 @@ def run_game(difficulty):
                     elif enemy.attack_type == "shadow_punch":
                         dmg = enemy.damage * 0.75 # Ult hits are fast but weaker
                     
-                    player.take_damage(dmg, enemy.x)
+                    player.take_damage(dmg, enemy)
                     enemy.ultimate_charge = min(enemy.ultimate_charge + 15, enemy.max_ultimate_charge)
                     
                     for _ in range(5):
@@ -1638,12 +1698,24 @@ def run_game(difficulty):
                 for p in projectiles[:]:
                     proj_hitbox = p.get_hitbox()
                     if p.is_player_projectile and enemy_hitbox.colliderect(proj_hitbox): # Player's fireball
-                        enemy.take_damage(p.damage, p.x)
+                        dmg = p.damage
+                        enemy.take_damage(dmg, player)
                         player.ultimate_charge += (15 + player.ult_charge_rate)
+                        player.health = min(player.max_health, player.health + (dmg * player.lifesteal)) # Lifesteal
                         for _ in range(10): particles.append(Particle(p.x, p.y, p.color))
                         if p in projectiles: projectiles.remove(p)
                     elif not p.is_player_projectile and player_hitbox.colliderect(proj_hitbox): # Enemy's fireball
-                        player.take_damage(p.damage, p.x)
+                        # --- Projectile Reflection Logic ---
+                        if player.is_blocking and player.can_reflect:
+                            is_hit_from_front = (p.x < player.x and player.direction == -1) or \
+                                                (p.x > player.x and player.direction == 1)
+                            if is_hit_from_front:
+                                p.is_player_projectile = True
+                                p.direction *= -1
+                                p.vel *= -1
+                                text_animations.append(TextAnimation("Reflect!", player.x, player.y - 150, BLUE))
+                                continue # Skip to next projectile
+                        player.take_damage(p.damage, enemy)
                         enemy.ultimate_charge = min(enemy.ultimate_charge + 15, enemy.max_ultimate_charge)
                         for _ in range(10): particles.append(Particle(p.x, p.y, p.color))
                         if p in projectiles: projectiles.remove(p)
@@ -1693,7 +1765,15 @@ def run_game(difficulty):
                         game_state = 'GAME_OVER'
 
             # --- Drawing ---
-            draw_background(screen)
+            shake_offset = (0, 0)
+            if screen_shake > 0:
+                shake_offset = (random.randint(-10, 10), random.randint(-10, 10))
+                screen_shake -= 1
+
+            # Draw background first with shake
+            draw_background(screen, shake_offset)
+
+            # Draw everything else (no shake)
             if player: player.draw(screen)
             if enemy: enemy.draw(screen)
             for p in projectiles: p.draw(screen)
