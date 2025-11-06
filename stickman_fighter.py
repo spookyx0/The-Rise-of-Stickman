@@ -2,9 +2,12 @@ import pygame
 import random
 import math
 
-# --- Initialize Pygame ---
+import os
+import json
+# --- Initialize Pygame & Mixer ---
 pygame.init()
 pygame.font.init()
+pygame.mixer.init(frequency=44100, size=-16, channels=2, buffer=512) # For sounds
 
 # --- Game Constants ---
 SCREEN_WIDTH = 1600 # Made screen wider
@@ -52,6 +55,42 @@ TIMER_FONT = pygame.font.SysFont('Arial', 40, bold=True)
 POWERUP_TITLE_FONT = pygame.font.SysFont('Arial', 60, bold=True)
 POWERUP_DESC_FONT = pygame.font.SysFont('Arial', 28)
 
+# --- Sound Effects ---
+# Create a 'sounds' folder and place your .wav or .ogg files there.
+sounds = {}
+def load_sounds():
+    """Loads all sound effects into the sounds dictionary."""
+    sound_files = {
+        'punch': 'sounds/punch.wav',
+        'kick': 'sounds/kick.wav',
+        'hit': 'sounds/hit.wav',
+        'block': 'sounds/block.wav',
+        'parry': 'sounds/parry.wav',
+        'jump': 'sounds/jump.wav',
+        'dash': 'sounds/dash.wav',
+        'teleport': 'sounds/teleport.wav',
+        'fireball': 'sounds/fireball.wav',
+        'stomp': 'sounds/stomp.wav',
+        'clash': 'sounds/clash.wav',
+        'powerup': 'sounds/powerup.wav',
+        'click': 'sounds/click.wav',
+        'win': 'sounds/win.wav',
+        'lose': 'sounds/lose.wav'
+    }
+    for name, path in sound_files.items():
+        try:
+            sounds[name] = pygame.mixer.Sound(path)
+        except pygame.error:
+            print(f"Warning: Sound file not found at '{path}'")
+            # Create a dummy sound object so the game doesn't crash
+            sounds[name] = pygame.mixer.Sound(pygame.mixer.Sound(buffer=b''))
+
+def play_sound(name, volume=0.7):
+    """Plays a sound from the loaded sounds dictionary."""
+    if name in sounds:
+        sounds[name].set_volume(volume)
+        sounds[name].play()
+
 # --- Global Lists (will be reset each level) ---
 projectiles = []
 particles = []
@@ -60,6 +99,54 @@ screen_shake = 0
 platforms = []
 player = None
 enemy = None
+clones = [] # For boss fight
+
+# --- Character Definitions ---
+CHARACTER_TYPES = {
+    "Brawler": {
+        "color": BLUE,
+        "base_health": 120,
+        "base_damage": 12,
+        "base_speed": 6,
+        "special_move_type": "fireball", # Default for now, could be unique later
+        "ultimate_move_type": "meteor_slam",
+        "desc": "A balanced fighter with good health and damage. Gains +5 HP, +1 DMG, +0.1 SPD per level."
+    },
+    "Agile": {
+        "color": GREEN,
+        "base_health": 90,
+        "base_damage": 10,
+        "base_speed": 8,
+        "special_move_type": "fireball",
+        "ultimate_move_type": "meteor_slam",
+        "desc": "Fast and nimble, but with lower health. Gains +4 HP, +0.5 DMG, +0.2 SPD per level."
+    },
+    "Tank": {
+        "color": ORANGE,
+        "base_health": 150,
+        "base_damage": 10,
+        "base_speed": 5,
+        "special_move_type": "fireball",
+        "ultimate_move_type": "meteor_slam",
+        "desc": "High health, but slower movement. Gains +7 HP, +0.5 DMG, +0.05 SPD per level."
+    }
+}
+
+# XP Curve (example)
+XP_LEVELS = [
+    0,    # Level 0
+    100,  # Level 1
+    250,  # Level 2
+    450,  # Level 3
+    700,  # Level 4
+    1000, # Level 5
+    1350, # Level 6
+    1750, # Level 7
+    2200, # Level 8
+    2700, # Level 9
+    3250  # Level 10 (Max level for now)
+]
+
 
 # --- Starry Sky (Static) ---
 stars = []
@@ -171,11 +258,12 @@ class Stickman:
     """
     Represents both the Player and the Enemy.
     Handles drawing, movement, attacking, and health.
-    """
-    def __init__(self, x, y, color, is_player):
+    """ 
+    def __init__(self, x, y, color, is_player, character_type_name=None):
         self.x = x
         self.y = y
         self.color = color
+        self.is_clone = False # For boss clones
         self.is_player = is_player
         
         self.width = 50
@@ -183,6 +271,7 @@ class Stickman:
         
         self.vel_x = 0
         self.vel_y = 0
+        self.scale = 1.0 # For boss scaling
         self.jump_power = 18
         self.gravity = 0.9
         self.on_ground = True
@@ -240,6 +329,12 @@ class Stickman:
         self.is_hit = False # New state for hit animation
         self.hit_anim_timer = 0
         
+        # --- Boss Specific ---
+        self.is_boss = False
+        self.shockwave_cooldown = 0
+        self.summon_cooldown = 0
+        
+        self.took_damage_this_round = False
         # Dash state
         self.dash_cooldown = 0
         self.max_dash_cooldown = 60
@@ -255,6 +350,11 @@ class Stickman:
         
         self.walk_frame = 0
         self.direction = 1 if is_player else -1
+
+        # --- Character Progression ---
+        self.character_type_name = character_type_name
+        self.level = 0
+        self.xp = 0
 
     def draw(self, surface):
         """Draws the stickman on the screen."""
@@ -281,6 +381,10 @@ class Stickman:
         # Enemy ult "shadow" flash
         if self.is_ulting and self.ult_step == 2 and not self.is_player:
             draw_color = PURPLE if (self.ult_timer // 2) % 2 == 0 else BLACK
+            
+        # Clone appearance
+        if self.is_clone:
+            draw_color = (PURPLE[0], PURPLE[1], PURPLE[2], 150) # Semi-transparent purple
             
         head_pos = (int(self.x), int(self.y - self.height * 0.9))
         body_start = head_pos
@@ -401,12 +505,12 @@ class Stickman:
 
 
         # Draw body parts
-        pygame.draw.circle(surface, draw_color, head_pos, int(self.height * 0.1)) # Head
-        pygame.draw.line(surface, draw_color, body_start, body_end, 5) # Body
-        pygame.draw.line(surface, draw_color, body_end, leg1_end, 5) # Leg 1
-        pygame.draw.line(surface, draw_color, body_end, leg2_end, 5) # Leg 2
-        pygame.draw.line(surface, draw_color, arm1_start, arm1_end, 5) # Arm 1
-        pygame.draw.line(surface, draw_color, arm2_start, arm2_end, 5) # Arm 2
+        pygame.draw.circle(surface, draw_color, head_pos, int(self.height * 0.1 * self.scale)) # Head
+        pygame.draw.line(surface, draw_color, body_start, body_end, int(5 * self.scale)) # Body
+        pygame.draw.line(surface, draw_color, body_end, leg1_end, int(5 * self.scale)) # Leg 1
+        pygame.draw.line(surface, draw_color, body_end, leg2_end, int(5 * self.scale)) # Leg 2
+        pygame.draw.line(surface, draw_color, arm1_start, arm1_end, int(5 * self.scale)) # Arm 1
+        pygame.draw.line(surface, draw_color, arm2_start, arm2_end, int(5 * self.scale)) # Arm 2
         
         # --- Stun Visual ---
         if self.is_stunned > 0 and self.is_stunned % 10 < 5:
@@ -426,8 +530,8 @@ class Stickman:
             headband_y = head_pos[1]
             headband_color = ult_ready_color if ult_ready_color else WHITE
             pygame.draw.line(surface, headband_color, 
-                             (head_pos[0] - int(self.height * 0.1), headband_y), 
-                             (head_pos[0] + int(self.height * 0.1), headband_y), 4)
+                             (head_pos[0] - int(self.height * 0.1 * self.scale), headband_y), 
+                             (head_pos[0] + int(self.height * 0.1 * self.scale), headband_y), 4)
             # Player cape
             cape_start = (int(self.x - (3 * self.direction)), int(self.y - self.height * 0.65))
             pygame.draw.rect(surface, BLUE, (cape_start[0], cape_start[1], 8, 30))
@@ -436,7 +540,7 @@ class Stickman:
             pygame.draw.circle(surface, glove_color, arm1_hand_pos, 8)
             pygame.draw.circle(surface, glove_color, arm2_hand_pos, 8)
             
-        else:
+        elif not self.is_clone: # Clones have no accessories
             # Enemy "angry eyes"
             eye_y = head_pos[1] - int(self.height * 0.03)
             eye1_start = (head_pos[0] + (self.height * 0.02) * self.direction, eye_y)
@@ -538,6 +642,7 @@ class Stickman:
                 self.dash_duration = 10 # 1/6th of a second dash
                 self.dash_cooldown = self.max_dash_cooldown
                 self.dash_invulnerability = 10 # Invulnerable during dash
+                play_sound('dash')
                 particles.extend([Particle(self.x, self.y - 50, WHITE) for _ in range(10)]) # Dash effect
                 return
             elif self.air_dash_count > 0: # --- NEW AIR DASH ---
@@ -547,6 +652,7 @@ class Stickman:
                 self.dash_cooldown = self.max_dash_cooldown
                 self.dash_invulnerability = 10
                 self.vel_y = 0 # Stop falling
+                play_sound('dash')
                 particles.extend([Particle(self.x, self.y - 50, WHITE) for _ in range(10)]) # Dash effect
                 return
             
@@ -556,6 +662,7 @@ class Stickman:
         
         if keys[pygame.K_t] and self.teleport_cooldown == 0 and self.on_ground:
             self.teleport_cooldown = self.max_teleport_cooldown
+            play_sound('teleport')
             # Poof effect at old location
             for _ in range(20):
                 particles.append(Particle(self.x, self.y - 50, PURPLE))
@@ -590,6 +697,7 @@ class Stickman:
         if keys[pygame.K_w] and self.on_ground and not self.is_blocking: # Can't jump while blocking
             self.vel_y = -self.jump_power
             self.on_ground = False
+            play_sound('jump', volume=0.5)
 
     def attack(self, keys, enemy_x): # Pass enemy_x for ult
         """Handles player attacks."""
@@ -608,6 +716,7 @@ class Stickman:
             self.is_attacking = False
             self.is_blocking = False
             text_animations.append(TextAnimation("METEOR SLAM!", self.x, self.y + 50, ORANGE, font=LEVEL_FONT, lifespan=60))
+            play_sound('stomp', volume=1.0)
             return
 
         if self.attack_cooldown == 0 and self.is_alive and not self.is_dying and not self.is_blocking and self.is_stunned == 0 and not self.is_hit and not self.is_ulting:
@@ -633,6 +742,7 @@ class Stickman:
                 self.attack_type = "punch"
                 self.attack_frame = 15 # Duration of attack
                 self.attack_cooldown = 30 # Cooldown
+                play_sound('punch')
                 
                 # Combo logic
                 if self.combo_step == 0:
@@ -643,6 +753,7 @@ class Stickman:
                 self.attack_type = "kick"
                 self.attack_frame = 20 # Duration of attack
                 self.attack_cooldown = 40 # Cooldown
+                play_sound('kick')
                 
                 # Combo logic
                 if self.combo_step == 1 and self.combo_timer > 0:
@@ -663,6 +774,7 @@ class Stickman:
                 self.attack_cooldown = 20
                 self.special_cooldown = self.max_special_cooldown
                 # Spawn projectile in main loop
+                play_sound('fireball')
                 text_animations.append(TextAnimation("FIREBALL!", self.x + (50 * self.direction), self.y - 150, PURPLE))
             
             # Reset combo if any other key is pressed
@@ -670,10 +782,15 @@ class Stickman:
                 if self.combo_step == 1 and not self.is_attacking:
                     self.combo_step = 0 # Allows non-attack keys to not break combo
                     
-    def update_ai(self, player):
+    def update_ai(self, player, current_level):
         """Controls the enemy AI."""
         if not self.is_alive or self.is_dying or self.is_stunned > 0 or self.is_dashing or self.is_hit or self.is_ulting:
             self.vel_x = 0
+            return
+            
+        # --- BOSS AI ---
+        if self.is_boss:
+            self.update_boss_ai(player)
             return
         
         # --- AI ULTIMATE ---
@@ -685,6 +802,7 @@ class Stickman:
             self.is_attacking = False # Stop other attacks
             self.is_blocking = False
             text_animations.append(TextAnimation("SHADOW BARRAGE!", self.x, self.y - 150, PURPLE, font=LEVEL_FONT, lifespan=60))
+            play_sound('teleport', volume=1.0)
         
         if self.dash_cooldown > 0:
             self.dash_cooldown -= 1
@@ -714,6 +832,7 @@ class Stickman:
                     if 0 < proj_dist < 300 and abs(self.y - p.y) < 50:
                         if random.random() < 0.9: # 90% dodge chance
                             self.vel_y = -self.jump_power * 0.8 # Smaller dodge jump
+                            play_sound('jump', volume=0.4)
                             self.on_ground = False
                             self.dodge_cooldown = 60
                             break
@@ -736,6 +855,7 @@ class Stickman:
                         self.is_dashing = True
                         self.dash_duration = 10 
                         self.dash_cooldown = self.max_dash_cooldown
+                        play_sound('dash')
                         self.dash_invulnerability = 10
                         self.vel_x = 25 * -self.direction # Dash away
                 # 20% chance to do nothing and get hit
@@ -765,6 +885,7 @@ class Stickman:
             if abs(self.x - closest_plat.centerx) < 50:
                 if random.random() < 0.05:
                     self.vel_y = -self.jump_power
+                    play_sound('jump', volume=0.4)
                     self.on_ground = False
             else:
                 # Move towards that platform
@@ -797,6 +918,7 @@ class Stickman:
         # --- AI Teleport ---
         if self.teleport_cooldown == 0 and self.on_ground and distance > 400 and random.random() < 0.02:
             self.teleport_cooldown = self.max_teleport_cooldown
+            play_sound('teleport')
             for _ in range(20): particles.append(Particle(self.x, self.y - 50, PURPLE))
             self.x += 250 * self.direction # Teleport towards player
             for _ in range(20): particles.append(Particle(self.x, self.y - 50, PURPLE))
@@ -808,6 +930,7 @@ class Stickman:
             self.attack_frame = 10
             self.attack_cooldown = 20
             self.special_cooldown = self.max_special_cooldown # AI has same cooldown
+            play_sound('fireball')
             text_animations.append(TextAnimation("FIREBALL!", self.x + (50 * self.direction), self.y - 150, RED))
         
         # AI Melee Logic
@@ -818,16 +941,90 @@ class Stickman:
                 self.is_attacking = True
                 self.attack_type = "punch" if random.random() < 0.7 else "kick"
                 self.attack_frame = 15 if self.attack_type == "punch" else 20
+                play_sound('punch' if self.attack_type == "punch" else 'kick')
                 self.attack_cooldown = 50 # Slower attack rate for AI
         elif distance > 400 and distance < 600: # Stay in this "mid-range"
             self.vel_x = 0
         elif distance >= 600: # Only move if very far
             self.vel_x = 0
         
+    def update_boss_ai(self, player):
+        """Unique AI for the final boss."""
+        # Cooldowns
+        if self.shockwave_cooldown > 0: self.shockwave_cooldown -= 1
+        if self.summon_cooldown > 0: self.summon_cooldown -= 1
+        
+        # --- Boss Unique Attacks ---
+        distance = abs(player.x - self.x)
+        
+        # 1. Summon Clones (when health is at 75% and 25%)
+        if (self.health < self.max_health * 0.75 and self.summon_cooldown == 0) or \
+           (self.health < self.max_health * 0.25 and self.summon_cooldown == 120): # Can summon twice
+            self.summon_cooldown = 600 # 10 second cooldown
+            self.is_attacking = True
+            self.attack_type = "kick" # Just a visual pose
+            self.attack_frame = 30
+            text_animations.append(TextAnimation("ARISE!", self.x, self.y - 150, PURPLE, font=LEVEL_FONT))
+            play_sound('teleport')
+            
+            # Summon two clones
+            clone1 = Stickman(self.x - 100, self.y, self.color, is_player=False)
+            clone1.is_clone = True
+            clone1.health = 1
+            clone1.max_health = 1
+            clone1.damage = 10
+            clone1.speed = 5
+            
+            clone2 = Stickman(self.x + 100, self.y, self.color, is_player=False)
+            clone2.is_clone = True
+            clone2.health = 1
+            clone2.max_health = 1
+            clone2.damage = 10
+            clone2.speed = 5
+            
+            clones.append(clone1)
+            clones.append(clone2)
+            return # Pause other actions while summoning
+
+        # 2. Ground Shockwave
+        if self.shockwave_cooldown == 0 and distance > 300 and self.on_ground:
+            self.shockwave_cooldown = 240 # 4 second cooldown
+            self.is_attacking = True
+            self.attack_type = "ground_pound"
+            self.attack_frame = 30
+            self.vel_y = 25 # Do the pound animation
+            self.vel_x = 0
+            # The shockwave projectile will be spawned in `update()` when it lands
+            return
+
+        # Use the normal AI for movement and basic attacks
+        self.update_ai(player, 10) # Pass level 10 to use the base AI logic
+
+    def update_clone_ai(self, player):
+        """Extremely simple AI for boss clones."""
+        if not self.is_alive or self.is_stunned > 0 or self.is_hit:
+            self.vel_x = 0
+            return
+        
+        # Always face and move towards the player
+        if player.x < self.x:
+            self.direction = -1
+            self.vel_x = -self.speed
+        else:
+            self.direction = 1
+            self.vel_x = self.speed
+        
+        # Simple attack
+        if abs(player.x - self.x) < 60 and self.attack_cooldown == 0:
+            self.is_attacking = True
+            self.attack_type = "punch"
+            self.attack_frame = 15
+            self.attack_cooldown = 60
+            play_sound('punch', volume=0.3)
 
     def update(self):
         """Updates the stickman's state each frame."""
-        global player, enemy # Add this line to access the global player/enemy
+        global player, enemy, clones # Add this line to access the global player/enemy
         
         # Handle stun
         if self.is_stunned > 0:
@@ -918,6 +1115,7 @@ class Stickman:
                         self.is_attacking = True
                         self.attack_type = "shadow_punch"
                         self.attack_frame = 5
+                        play_sound('punch', volume=0.5)
                         self.ult_hit_count -= 1
                         # Create purple particles for shadow effect
                         for _ in range(5):
@@ -1059,7 +1257,14 @@ class Stickman:
                     pound_size = 15 if self.attack_type == "ground_pound" else 40
                     screen_shake = 10 if self.attack_type == "ground_pound" else 20
                     pound_text = "STOMP!" if self.attack_type == "ground_pound" else "METEOR!"
+                    play_sound('stomp')
                     text_animations.append(TextAnimation(pound_text, self.x, self.y - 50, ORANGE))
+                    
+                    # Boss shockwave attack
+                    if self.is_boss and self.attack_type == "ground_pound":
+                        # Spawn a shockwave projectile
+                        shockwave = Projectile(self.x, GROUND_Y - 20, 1, RED, self.damage, False)
+                        projectiles.append(shockwave)
                     
                     for _ in range(pound_size):
                         p = Particle(self.x, self.y, ORANGE)
@@ -1097,6 +1302,7 @@ class Stickman:
                         text_animations.append(TextAnimation("PARRY!", self.x, self.y - 150, YELLOW, font=LEVEL_FONT, lifespan=40))
                         for _ in range(15):
                             particles.append(Particle(self.x + 30 * self.direction, self.y - 60, YELLOW))
+                        play_sound('parry')
                         screen_shake = 15
                         return # Successful parry
 
@@ -1105,6 +1311,7 @@ class Stickman:
                         self.health -= damage * 0.2 # Blocked, take 20% damage
                         self.hit_duration = 5
                         text_animations.append(TextAnimation("Blocked", self.x, self.y - 150, GRAY))
+                        play_sound('block')
                         # Spawn block sparks
                         for _ in range(3):
                             particles.append(Particle(self.x + 20 * self.direction, self.y - 50, WHITE))
@@ -1115,6 +1322,8 @@ class Stickman:
                 
             # Normal hit (or hit from behind)
             self.health -= damage
+            self.took_damage_this_round = True
+            play_sound('hit')
             self.hit_duration = 10 # Frames to flash red
             self.is_hit = True # Trigger hit animation
             self.hit_anim_timer = 15 # 0.25 seconds
@@ -1122,6 +1331,18 @@ class Stickman:
             text_animations.append(TextAnimation("Hit!", self.x, self.y - 150, RED)) # Added Hit text
             screen_shake = max(screen_shake, 5) # Add a small shake on hit
             if self.health <= 0:
+                # If a clone is hit, it just dies
+                if self.is_clone:
+                    self.health = 0
+                    self.is_alive = False
+                    # No death animation for clones, they just disappear
+                    for _ in range(10):
+                        particles.append(Particle(self.x, self.y - 50, PURPLE))
+                    text_animations.append(TextAnimation("Faded", self.x, self.y - 150, PURPLE, font=SPECIAL_FONT, lifespan=40))
+                    # No further logic for clones
+                    return
+
+                # Normal death logic for player/enemy
                 self.health = 0
                 self.is_alive = False
                 self.is_dying = True
@@ -1330,33 +1551,35 @@ def draw_powerup_screen(selected_powerups, mouse_pos):
         desc_rect = desc_text.get_rect(center=(box_rect.centerx, box_rect.centery + 30))
         screen.blit(desc_text, desc_rect)
 
-def run_game(difficulty):
+def run_game(difficulty, selected_character_name, loaded_save_data=None):
     """Main game loop."""
-    global projectiles, particles, text_animations, platforms, player, enemy # Make player/enemy global for AI Ult
+    global projectiles, particles, text_animations, platforms, player, enemy, clones # Make player/enemy global for AI Ult
 
-    # Player stats that persist between levels
+    # 1. Get base character info
+    char_info = CHARACTER_TYPES[selected_character_name]
+
+    # 2. Initialize player_stats with base character stats and default progression/powerup values
     player_stats = {
-        'max_health': 100,
-        'damage': 10,
-        'speed': 7,
-        'special_cd': 180,
-        'dash_cd': 60,
-        'teleport_cd': 120,
-        'crit_chance': 0.0,
-        'fireball_damage': 30,
-        'stomp_damage': 15,
-        'ultimate_damage': 75,
-        'ult_charge_rate': 0,
-        'ultimate_charge': 0,
-        'max_ultimate_charge': 100,
-        'full_heal_next_level': False,
-        'max_air_dash': 1,
-        'has_ult_aura': False,
-        'lifesteal': 0.0,
-        'reflect_projectiles': False
+        'character_type': selected_character_name,
+        'level': 0,
+        'xp': 0,
+        'current_level': 1, # Tracks game level progression (1-10)
+        'max_health': char_info['base_health'],
+        'damage': char_info['base_damage'],
+        'speed': char_info['base_speed'],
+        'color': char_info['color'],
+        'special_cd': 180, 'dash_cd': 60, 'teleport_cd': 120, 'crit_chance': 0.0,
+        'fireball_damage': 30, 'stomp_damage': 15, 'ultimate_damage': 75, 'ult_charge_rate': 0,
+        'ultimate_charge': 0, 'max_ultimate_charge': 100, 'full_heal_next_level': False,
+        'max_air_dash': 1, 'has_ult_aura': False, 'lifesteal': 0.0, 'reflect_projectiles': False
     }
     
-    current_level = 1
+    # Load progress for the specific character if available
+    if loaded_save_data and selected_character_name in loaded_save_data: # This is correct
+        player_stats.update(loaded_save_data[selected_character_name])
+    
+    current_level = player_stats.get('current_level', 1) # Ensure current_level is set from loaded data or default
+
     game_state = 'START_LEVEL' # Possible states: START_LEVEL, PLAYING, POWERUP, GAME_OVER, GAME_WON
     
     player = None
@@ -1397,6 +1620,7 @@ def run_game(difficulty):
                     
                     if chosen_index != -1:
                         # Apply power-up
+                        play_sound('powerup')
                         choice = selected_powerups[chosen_index]
                         effect = choice['effect']
                         value = choice['value']
@@ -1433,6 +1657,7 @@ def run_game(difficulty):
                     
                     if chosen_index != -1:
                         # Apply power-up (same as above)
+                        play_sound('powerup')
                         choice = selected_powerups[chosen_index]
                         effect = choice['effect']
                         value = choice['value']
@@ -1463,6 +1688,7 @@ def run_game(difficulty):
             projectiles = []
             particles = []
             text_animations = []
+            clones = []
             platforms = []
             
             # Create platforms
@@ -1471,7 +1697,7 @@ def run_game(difficulty):
             platforms.append(pygame.Rect(SCREEN_WIDTH * 0.8 - 75, GROUND_Y - 120, 150, 30))
             
             # Create Player
-            player = Stickman(200, GROUND_Y, BLUE, is_player=True)
+            player = Stickman(200, GROUND_Y, player_stats['color'], is_player=True, character_type_name=selected_character_name)
             # Apply all stats from player_stats
             player.max_health = player_stats['max_health']
             if player_stats['full_heal_next_level']:
@@ -1496,19 +1722,38 @@ def run_game(difficulty):
             player.max_air_dash = player_stats['max_air_dash']
             player.air_dash_count = player.max_air_dash
             player.has_ult_aura = player_stats['has_ult_aura']
+            player.took_damage_this_round = False # Reset for the new round
             player.lifesteal = player_stats['lifesteal']
             player.can_reflect = player_stats['reflect_projectiles']
+            player.level = player_stats['level']
+            player.xp = player_stats['xp']
+
+            # Apply level bonuses
+            # Agile: +4 HP, +0.5 DMG, +0.2 SPD
+            # Brawler: +5 HP, +1 DMG, +0.1 SPD
+            # Tank: +7 HP, +0.5 DMG, +0.05 SPD
+            char_level_bonus_hp = 0
+            char_level_bonus_damage = 0
+            char_level_bonus_speed = 0
+            if player.character_type_name == "Agile": char_level_bonus_hp, char_level_bonus_damage, char_level_bonus_speed = player.level * 4, player.level * 0.5, player.level * 0.2
+            elif player.character_type_name == "Brawler": char_level_bonus_hp, char_level_bonus_damage, char_level_bonus_speed = player.level * 5, player.level * 1, player.level * 0.1
+            elif player.character_type_name == "Tank": char_level_bonus_hp, char_level_bonus_damage, char_level_bonus_speed = player.level * 7, player.level * 0.5, player.level * 0.05
+
+            player.max_health += char_level_bonus_hp
+            player.health += char_level_bonus_hp # Heal for bonus HP
+            player.damage += char_level_bonus_damage
+            player.speed += char_level_bonus_speed
 
             
             # Create Enemy
             level_stats = {
-                1: (100, 1.0, 5), 2: (120, 1.0, 7), 3: (140, 1.1, 9),
-                4: (160, 1.1, 11), 5: (200, 1.2, 13), 6: (220, 1.2, 15),
-                7: (250, 1.3, 16), 8: (280, 1.3, 17), 9: (320, 1.4, 18),
-                10: (400, 1.5, 20) # Boss level
+                1: (100, 1.0, 5, False), 2: (120, 1.0, 7, False), 3: (140, 1.1, 9, False),
+                4: (160, 1.1, 11, False), 5: (200, 1.2, 13, False), 6: (220, 1.2, 15, False),
+                7: (250, 1.3, 16, False), 8: (280, 1.3, 17, False), 9: (320, 1.4, 18, False),
+                10: (600, 1.2, 25, True) # Boss level
             }
             stats = level_stats.get(current_level, level_stats[10]) # Get stats or default to max
-            base_health, base_speed_mult, base_damage = stats
+            base_health, base_speed_mult, base_damage, is_boss = stats
             
             # --- Apply Difficulty Modifiers ---
             if difficulty == "Easy":
@@ -1533,6 +1778,12 @@ def run_game(difficulty):
             enemy.damage = enemy_damage
             enemy.speed = 7
             enemy.stomp_damage = 10 * (enemy_damage / 5) # Scale stomp too
+            enemy.is_boss = is_boss
+            
+            if is_boss:
+                enemy.scale = 1.2 # Make boss bigger
+                enemy.color = (150, 0, 0) # Darker red
+                enemy.max_ultimate_charge = 150 # Boss needs more to ult
             
             # --- Apply Enemy Powerups (Hard Mode) ---
             if difficulty == "Hard" and current_level > 1 and (current_level - 1) % 3 == 0:
@@ -1586,9 +1837,14 @@ def run_game(difficulty):
             player.update()
             
             if game_over_timer == 0:
-                enemy.update_ai(player)
+                enemy.update_ai(player, current_level)
             
             enemy.update()
+            
+            # Update clones
+            for clone in clones:
+                clone.update_clone_ai(player)
+                clone.update()
             
             # --- Handle Projectile Spawning ---
             if game_over_timer == 0:
@@ -1616,6 +1872,11 @@ def run_game(difficulty):
                 if ta.lifespan <= 0:
                     if ta in text_animations:
                         text_animations.remove(ta)
+            
+            # Remove dead clones
+            for c in clones[:]:
+                if not c.is_alive:
+                    clones.remove(c)
 
             # --- Check Collisions ---
             if game_over_timer == 0:
@@ -1674,6 +1935,14 @@ def run_game(difficulty):
                     for _ in range(5):
                         particles.append(Particle(enemy.attack_hitbox.centerx, enemy.attack_hitbox.centery, YELLOW))
                     enemy.attack_hitbox = None
+                    
+                # Clone attacks player
+                for clone in clones:
+                    if clone.attack_hitbox and player_hitbox.colliderect(clone.attack_hitbox):
+                        player.take_damage(clone.damage, clone)
+                        for _ in range(3): particles.append(Particle(clone.attack_hitbox.centerx, clone.attack_hitbox.centery, PURPLE))
+                        clone.attack_hitbox = None
+                        break # Only one clone can hit per frame
                 
                 # --- Projectile Collisions ---
                 
@@ -1687,6 +1956,7 @@ def run_game(difficulty):
                                 # CLASH
                                 for _ in range(15):
                                     particles.append(Particle(p1.x, p1.y, ORANGE))
+                                play_sound('clash')
                                 text_animations.append(TextAnimation("CLASH!", p1.x, p1.y, WHITE, lifespan=20))
                                 if p1 in projectiles:
                                     projectiles.remove(p1)
@@ -1713,6 +1983,7 @@ def run_game(difficulty):
                                 p.is_player_projectile = True
                                 p.direction *= -1
                                 p.vel *= -1
+                                play_sound('parry', volume=0.8)
                                 text_animations.append(TextAnimation("Reflect!", player.x, player.y - 150, BLUE))
                                 continue # Skip to next projectile
                         player.take_damage(p.damage, enemy)
@@ -1728,16 +1999,20 @@ def run_game(difficulty):
             if game_over_timer == 0:
                 if not player.is_alive:
                     game_over_timer = 60 # 1 second death animation
+                    play_sound('lose')
                     game_over_pending = "You Lose!"
                 elif not enemy.is_alive:
                     game_over_timer = 60 # 1 second death animation
+                    play_sound('win')
                     game_over_pending = "You Win!"
                 elif time_remaining == 0:
                     game_over_timer = 1 # 1 frame delay to show message
                     if player.health > enemy.health:
                         game_over_pending = "You Win!"
+                        play_sound('win')
                     elif enemy.health > player.health:
                         game_over_pending = "You Lose!"
+                        play_sound('lose')
                     else:
                         game_over_pending = "Draw!"
         
@@ -1749,6 +2024,42 @@ def run_game(difficulty):
                     if game_over_pending == "You Win!":
                         # Save ult charge for next level
                         player_stats['ultimate_charge'] = player.ultimate_charge
+                        player_stats['current_level'] = current_level + 1
+                        
+                        # --- XP and Leveling ---
+                        xp_gained = 50 + (current_level * 5) # Example XP gain
+                        player_stats['xp'] += xp_gained
+                        text_animations.append(TextAnimation(f"+{xp_gained} XP!", player.x, player.y - 180, YELLOW, font=SPECIAL_FONT, lifespan=60))
+
+                        # Check for level up
+                        if player_stats['level'] < len(XP_LEVELS) - 1 and player_stats['xp'] >= XP_LEVELS[player_stats['level'] + 1]:
+                            player_stats['level'] += 1
+                            text_animations.append(TextAnimation(f"LEVEL UP! {player_stats['level']}", player.x, player.y - 220, GREEN, font=LEVEL_FONT, lifespan=80))
+                            play_sound('powerup', volume=1.0) # Use powerup sound for level up
+
+                        # Load existing save data to update only the current character
+                        all_save_data = {}
+                        try:
+                            with open('savegame.json', 'w') as f:
+                                if os.path.exists('savegame.json'):
+                                    with open('savegame.json', 'r') as f_read:
+                                        all_save_data = json.load(f_read)
+                        except Exception as e:
+                            print(f"Error loading save data for update: {e}")
+
+                        # --- Flawless Bonus ---
+                        if not player.took_damage_this_round:
+                            player_stats['max_health'] += 10
+                            player_stats['damage'] += 5
+                            text_animations.append(TextAnimation("Flawless!", player.x, player.y - 150, YELLOW, font=LEVEL_FONT, lifespan=80))
+                            play_sound('powerup', volume=1.0)
+
+                        all_save_data[selected_character_name] = player_stats # Update current character's stats
+                        try:
+                            with open('savegame.json', 'w') as f:
+                                json.dump(all_save_data, f, indent=4) # Pretty print JSON
+                        except Exception as e: print(f"Error saving game: {e}")
+
                         if current_level == MAX_LEVEL:
                             game_state = 'GAME_WON'
                         else:
@@ -1762,6 +2073,26 @@ def run_game(difficulty):
                                 
                             game_state = 'POWERUP'
                     elif game_over_pending == "You Lose!" or game_over_pending == "Draw!":
+                        # On loss, update XP and level, but don't advance current_level
+                        player_stats['xp'] = player.xp
+                        player_stats['level'] = player.level
+
+                        # Load existing save data to update only the current character
+                        all_save_data = {}
+                        try:
+                            if os.path.exists('savegame.json'):
+                                with open('savegame.json', 'r') as f:
+                                    all_save_data = json.load(f)
+                        except Exception as e:
+                            print(f"Error loading save data for update: {e}")
+
+                        all_save_data[selected_character_name] = player_stats # Update current character's stats
+                        try:
+                            with open('savegame.json', 'w') as f:
+                                json.dump(all_save_data, f, indent=4) # Pretty print JSON
+                        except Exception as e: print(f"Error saving game: {e}")
+
+                        # No longer delete save file on loss, just update character progress
                         game_state = 'GAME_OVER'
 
             # --- Drawing ---
@@ -1776,6 +2107,7 @@ def run_game(difficulty):
             # Draw everything else (no shake)
             if player: player.draw(screen)
             if enemy: enemy.draw(screen)
+            for clone in clones: clone.draw(screen)
             for p in projectiles: p.draw(screen)
             for p in particles: p.draw(screen)
             for ta in text_animations: ta.draw(screen)
@@ -1794,15 +2126,39 @@ def run_game(difficulty):
         elif game_state == 'GAME_WON':
             draw_game_over_screen("You Beat The Game!")
             pygame.display.flip()
+            # Delete this character's save data on win
+            all_save_data = {}
+            try:
+                if os.path.exists('savegame.json'):
+                    with open('savegame.json', 'r') as f:
+                        all_save_data = json.load(f)
+            except Exception as e:
+                print(f"Error loading save data for update: {e}")
 
-def draw_main_menu(start_button, mouse_pos):
+            if selected_character_name in all_save_data:
+                del all_save_data[selected_character_name] # Remove this character's progress
+            try:
+                with open('savegame.json', 'w') as f:
+                    json.dump(all_save_data, f, indent=4)
+            except Exception as e: print(f"Error deleting save file: {e}")
+
+def draw_main_menu(start_button, continue_button, mouse_pos, has_save):
     """Draws the main title screen and start button."""
     screen.fill(SKY_COLOR)
     title_text = GAME_OVER_FONT.render("Stickman Fighter", True, YELLOW)
     title_rect = title_text.get_rect(center=(SCREEN_WIDTH / 2, SCREEN_HEIGHT / 2 - 200)) # Moved title up
     screen.blit(title_text, title_rect)
     
-    # Draw Start Button
+    # --- Draw Continue Button (if save exists) ---
+    if has_save:
+        cont_color = BLUE
+        if continue_button.collidepoint(mouse_pos): cont_color = (100, 100, 255)
+        pygame.draw.rect(screen, cont_color, continue_button, border_radius=10)
+        pygame.draw.rect(screen, WHITE, continue_button, 4, border_radius=10)
+        cont_text = LEVEL_FONT.render("Continue", True, WHITE)
+        screen.blit(cont_text, cont_text.get_rect(center=continue_button.center))
+    
+    # --- Draw Start Button ---
     button_color = GREEN
     if start_button.collidepoint(mouse_pos):
         button_color = LIGHT_GREEN # Hover effect
@@ -1814,7 +2170,7 @@ def draw_main_menu(start_button, mouse_pos):
     screen.blit(start_text, start_rect)
     
     # --- Add Instructions ---
-    instructions_y_start = start_button.bottom + 50
+    instructions_y_start = start_button.bottom + 70
     
     # Section Titles
     controls_title = LEVEL_FONT.render("Controls", True, WHITE)
@@ -1902,22 +2258,120 @@ def draw_difficulty_select(easy_rect, medium_rect, hard_rect, mouse_pos):
     hard_text = LEVEL_FONT.render("Hard", True, BLACK)
     screen.blit(hard_text, hard_text.get_rect(center=hard_rect.center))
 
+def draw_character_select_screen(mouse_pos, all_save_data):
+    """Draws the character selection screen."""
+    screen.fill(SKY_COLOR)
+    title_text = POWERUP_TITLE_FONT.render("Choose Your Fighter", True, YELLOW)
+    title_rect = title_text.get_rect(center=(SCREEN_WIDTH / 2, 100))
+    screen.blit(title_text, title_rect)
+
+    for i, char_name in enumerate(CHARACTER_TYPES):
+        char_info = CHARACTER_TYPES[char_name]
+        
+        box_width = 300
+        box_height = 250 # Increased height for XP/Level
+        x_pos = (SCREEN_WIDTH / 2) + (i - 1) * (box_width + 50)
+        y_pos = SCREEN_HEIGHT / 2 - 50
+        
+        box_rect = pygame.Rect(x_pos - box_width/2, y_pos - box_height/2, box_width, box_height)
+        
+        # Hover effect
+        if box_rect.collidepoint(mouse_pos):
+            pygame.draw.rect(screen, LIGHT_GRAY, box_rect, 5)
+        else:
+            pygame.draw.rect(screen, GRAY, box_rect, 5)
+        
+        # Character Name
+        name_text = LEVEL_FONT.render(char_name, True, char_info['color'])
+        name_rect = name_text.get_rect(center=(box_rect.centerx, box_rect.top + 30))
+        screen.blit(name_text, name_rect)
+
+        # Character Description
+        desc_text = SPECIAL_FONT.render(char_info['desc'], True, WHITE)
+        desc_rect = desc_text.get_rect(center=(box_rect.centerx, box_rect.top + 70))
+        screen.blit(desc_text, desc_rect)
+
+        # Display current level and XP for this character
+        char_save_data = all_save_data.get(char_name, {})
+        char_level = char_save_data.get('level', 0)
+        char_xp = char_save_data.get('xp', 0)
+
+        level_text = HEALTH_FONT.render(f"Level: {char_level}", True, YELLOW)
+        level_rect = level_text.get_rect(center=(box_rect.centerx, box_rect.bottom - 80))
+        screen.blit(level_text, level_rect)
+
+        # XP Bar
+        xp_bar_width = box_width - 40
+        xp_bar_height = 15
+        xp_bar_x = box_rect.centerx - xp_bar_width / 2
+        xp_bar_y = box_rect.bottom - 50
+
+        pygame.draw.rect(screen, BLACK, (xp_bar_x, xp_bar_y, xp_bar_width, xp_bar_height))
+        
+        next_level_xp = XP_LEVELS[char_level + 1] if char_level < len(XP_LEVELS) - 1 else XP_LEVELS[-1]
+        current_level_xp_base = XP_LEVELS[char_level]
+
+        xp_progress = 0
+        if next_level_xp > current_level_xp_base:
+            xp_progress = (char_xp - current_level_xp_base) / (next_level_xp - current_level_xp_base)
+        
+        xp_fill = xp_bar_width * xp_progress
+        pygame.draw.rect(screen, BLUE, (xp_bar_x, xp_bar_y, xp_fill, xp_bar_height))
+        pygame.draw.rect(screen, WHITE, (xp_bar_x, xp_bar_y, xp_bar_width, xp_bar_height), 1)
+
+        xp_text = SPECIAL_FONT.render(f"XP: {char_xp}/{next_level_xp}", True, WHITE)
+        xp_text_rect = xp_text.get_rect(center=(box_rect.centerx, xp_bar_y + xp_bar_height / 2))
+        screen.blit(xp_text, xp_text_rect)
+
+        # Stats (simplified for display)
+        stats_y = box_rect.bottom - 20
+        stats_text = SPECIAL_FONT.render(f"HP: {char_info['base_health'] + char_level * 5}  DMG: {char_info['base_damage'] + char_level * 1}  SPD: {char_info['base_speed'] + char_level * 0.1:.1f}", True, LIGHT_GRAY)
+        stats_rect = stats_text.get_rect(center=(box_rect.centerx, stats_y))
+        screen.blit(stats_text, stats_rect)
+
 def main():
     """Main application loop."""
-    app_state = 'MAIN_MENU' # MAIN_MENU, DIFFICULTY_SELECT
+    app_state = 'MAIN_MENU' # MAIN_MENU, DIFFICULTY_SELECT, CHARACTER_SELECT
     
     # --- Button Rects for Menus (Adjusted for 1600x900) ---
-    start_button_rect = pygame.Rect(SCREEN_WIDTH / 2 - 150, SCREEN_HEIGHT / 2 - 100, 300, 80) # Moved Start button up
+    has_save_file = os.path.exists('savegame.json')
+    
+    continue_button_rect = pygame.Rect(SCREEN_WIDTH / 2 - 150, SCREEN_HEIGHT / 2 - 120, 300, 80)
+    start_button_y = SCREEN_HEIGHT / 2 - 20 if has_save_file else SCREEN_HEIGHT / 2 - 60
+    start_button_rect = pygame.Rect(SCREEN_WIDTH / 2 - 150, start_button_y, 300, 80)
     
     easy_button_rect = pygame.Rect(SCREEN_WIDTH / 2 - 150, SCREEN_HEIGHT / 2 - 100, 300, 80)
     medium_button_rect = pygame.Rect(SCREEN_WIDTH / 2 - 150, SCREEN_HEIGHT / 2 + 10, 300, 80)
     hard_button_rect = pygame.Rect(SCREEN_WIDTH / 2 - 150, SCREEN_HEIGHT / 2 + 120, 300, 80)
 
+    selected_difficulty = None # To store difficulty choice before character selection
+    selected_character_name = None # To store the chosen character
+    all_save_data = {} # To hold all character save data
+
     while True:
+        # Load sounds once at the start
+        if not sounds:
+            load_sounds()
         clock.tick(FPS)
         
         mouse_pos = pygame.mouse.get_pos()
         
+        # Check for save file to update menu
+        # A save file exists if it's not empty or contains any character data
+        has_save_file = False
+        try:
+            if os.path.exists('savegame.json'):
+                with open('savegame.json', 'r') as f:
+                    all_save_data = json.load(f)
+                    if all_save_data: # Check if the dictionary is not empty
+                        has_save_file = True
+        except (json.JSONDecodeError, Exception) as e:
+            print(f"Error reading save file: {e}")
+            all_save_data = {} # Reset if corrupted
+
+        start_button_y = SCREEN_HEIGHT / 2 - 20 if has_save_file else SCREEN_HEIGHT / 2 - 60
+        start_button_rect.y = start_button_y
+
         # --- Event Handling (Menus) ---
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
@@ -1927,7 +2381,14 @@ def main():
             if event.type == pygame.MOUSEBUTTONDOWN:
                 if event.button == 1: # Left click
                     if app_state == 'MAIN_MENU':
+                        # Continue Button
+                        if has_save_file and continue_button_rect.collidepoint(mouse_pos):
+                            play_sound('click')
+                            app_state = 'CHARACTER_SELECT' # Go to character select to choose which to continue
+                        
+                        # Start Button
                         if start_button_rect.collidepoint(mouse_pos):
+                            play_sound('click')
                             app_state = 'DIFFICULTY_SELECT'
                             
                     elif app_state == 'DIFFICULTY_SELECT':
@@ -1940,17 +2401,35 @@ def main():
                             difficulty = "Hard"
                             
                         if difficulty:
-                            # Start the game. run_game will loop until game over.
-                            run_game(difficulty)
-                            # When game is over, return to main menu
-                            app_state = 'MAIN_MENU'
+                            play_sound('click')
+                            # Store difficulty and move to character select
+                            selected_difficulty = difficulty
+                            app_state = 'CHARACTER_SELECT'
+
+                    elif app_state == 'CHARACTER_SELECT':
+                        for i, char_name in enumerate(CHARACTER_TYPES):
+                            char_button_rect = pygame.Rect(
+                                SCREEN_WIDTH / 2 - 150 + (i - 1) * 350, # Adjust position for 3 characters
+                                SCREEN_HEIGHT / 2 - 50,
+                                300, 250 # Match box_height in draw_character_select_screen
+                            )
+                            if char_button_rect.collidepoint(mouse_pos):
+                                play_sound('click')
+                                selected_character_name = char_name
+                                # Now run the game with selected character and difficulty
+                                run_game(selected_difficulty, selected_character_name, loaded_save_data=all_save_data)
+                                # When game is over, return to main menu
+                                app_state = 'MAIN_MENU'
+                                break # Exit character selection loop
 
         # --- Drawing (Menus) ---
         screen.fill(SKY_COLOR)
         if app_state == 'MAIN_MENU':
-            draw_main_menu(start_button_rect, mouse_pos)
+            draw_main_menu(start_button_rect, continue_button_rect, mouse_pos, has_save_file)
         elif app_state == 'DIFFICULTY_SELECT':
             draw_difficulty_select(easy_button_rect, medium_button_rect, hard_button_rect, mouse_pos)
+        elif app_state == 'CHARACTER_SELECT':
+            draw_character_select_screen(mouse_pos, all_save_data) # Pass all_save_data to display levels/xp
         
         pygame.display.flip()
 

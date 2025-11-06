@@ -1,0 +1,31 @@
+{
+    "Tank": {
+        "character_type": "Tank",
+        "level": 1,
+        "xp": 180,
+        "current_level": 4,
+        "max_health": 175,
+        "damage": 10,
+        "speed": 5,
+        "color": [
+            255,
+            165,
+            0
+        ],
+        "special_cd": 180,
+        "dash_cd": 60,
+        "teleport_cd": 120,
+        "crit_chance": 0.0,
+        "fireball_damage": 30,
+        "stomp_damage": 15,
+        "ultimate_damage": 75,
+        "ult_charge_rate": 0,
+        "ultimate_charge": 100,
+        "max_ultimate_charge": 100,
+        "full_heal_next_level": false,
+        "max_air_dash": 2,
+        "has_ult_aura": false,
+        "lifesteal": 0.05,
+        "reflect_projectiles": false
+    }
+}
